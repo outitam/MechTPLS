@@ -4,6 +4,38 @@ module tpls_maths
 
 contains
 
+    subroutine divergence(div,vx,vy,vz)
+
+    use tpls_constants
+    use tpls_mpi
+    use mpi
+    implicit none
+    
+    !----- Inputs -----!
+
+    double precision, dimension(sx-1:ex+1,sy-1:ey+1,0:maxn-2), intent(in) :: vx, vy
+    double precision, dimension(sx-1:ex+1,sy-1:ey+1,0:maxn-1), intent(in) :: vz
+
+    !----- Output -----!
+
+    double precision, dimension(sx-1:ex+1,sy-1:ey+1,0:maxn), intent(out) :: div
+
+    !----- Intermediate arrays -----!
+
+    integer :: i,j,k
+    double precision :: scalar_plusx,scalar_minusx
+
+    div = 0.0D+00
+    
+    div(sx:ex,sy:ey,1:maxn-1) =                                           &
+           ( vx(sx+1:ex+1,sy:ey,0:maxn-2) - vx(sx:ex,sy:ey,0:maxn-2) )/dx &
+         + ( vy(sx:ex,sy+1:ey+1,0:maxn-2) - vy(sx:ex,sy:ey,0:maxn-2) )/dy &
+         + ( vz(sx:ex,sy:ey,1:maxn-1)     - vz(sx:ex,sy:ey,0:maxn-2) )/dz
+    
+    return
+  end subroutine divergence
+
+
 
   subroutine Least_Squares(A,x,b,nr,nc)
 
@@ -290,7 +322,7 @@ contains
     
     logical :: select_eigenvalue
     double precision :: wr, wi
-    double precision :: delta = 0.1D0
+    double precision :: delta = 0.05D0
     
     if ( sqrt(wr**2. + wi**2.) .GT. 1.d0-delta ) then
        select_eigenvalue = .true.
@@ -444,33 +476,20 @@ contains
     return
   end subroutine get_difference
 
-  subroutine norm(u,sx_,sy_,sz_,ex_,ey_,ez_,norme)
+  subroutine norm(norme, x, n)
 
     use tpls_constants
     use tpls_mpi
     use mpi
     implicit none
 
-    integer :: ex_,ey_,ez_,sx_,sy_,sz_
-    double precision, dimension(sx_-1:ex_+1,sy_-1:ey_+1,sz_-1:ez_+1) :: u
+    integer, intent(in) :: n
+    double precision, dimension(n), intent(in) :: x
     double precision :: norme, dummy
 
-    integer :: i, j, k, l
-
-    dummy = 0.d0
-
-    do k = sz_-1,ez_+1
-       do j = sy_-1,ey_+1
-          do i = sx_-1,ex_+1
-
-             dummy = dummy + u(i,j,k)**2
-
-          enddo
-       enddo
-    enddo
-
-    call mpi_allreduce(dummy,norme,1,MPI_DOUBLE_PRECISION,MPI_SUM,comm2d_quasiperiodic,ierr)
-    norme = dsqrt(norme)
+    dummy = dot_product(x,x)
+    call mpi_allreduce(dummy, norme, 1, mpi_double_precision, mpi_sum, comm2d_quasiperiodic, ierr)
+    norme = sqrt(norme)
 
     return
   end subroutine norm

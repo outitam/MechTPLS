@@ -9,10 +9,9 @@ contains
     use tpls_constants
     use tpls_configuration
     use tpls_mpi
-    use tpls_selective_frequency_damping
-    use tpls_levelset
-    use tpls_fluid
-    use tpls_pressure_solver
+    use tpls_levelset, only : advance_levelset
+    use tpls_fluid, only : advance_fluid, pressure_correction
+    use tpls_pressure_solver, only : poisson_solver
     use tpls_io
     use tpls_userchk
     use tpls_maths
@@ -22,91 +21,15 @@ contains
     double precision, dimension(sx-1:ex+1,sy-1:sy+1,sz_uv:ez_uv), intent(inout) :: vx, vy
     double precision, dimension(sx-1:ex+1,sy-1:ey+1,sz_w:ez_w)  , intent(inout) :: vz
     double precision, dimension(sx-1:ex+1,sy-1:ey+1,sz_p:ez_p)  , intent(inout) :: pres, phi
-    double precision, dimension(sx-1:ex+1,sy-1:ey+1,sz_p:ez_p) :: curvature, interface_loc
+
+    !----- Miscellaneous -----!
+
+    double precision, dimension(sx-1:ex+1,sy-1:ey+1,sz_p:ez_p) :: div, pres_old
 
     double precision :: CFL, volume
-    
-    !----- Allocation -----!
-    
-    
-    allocate(conv0_u(sx-1:ex+1,sy-1:ey+1,sz_uv:ez_uv))
-    allocate(conv1_u(sx-1:ex+1,sy-1:ey+1,sz_uv:ez_uv))
-    
-    allocate(csf_u0(sx-1:ex+1,sy-1:ey+1,sz_uv:ez_uv))
-    allocate(csf_u1(sx-1:ex+1,sy-1:ey+1,sz_uv:ez_uv))
-    
-    allocate(diffusion1_u(sx-1:ex+1,sy-1:ey+1,sz_uv:ez_uv))
-    
-    allocate(conv0_v(sx-1:ex+1,sy-1:ey+1,sz_uv:ez_uv))
-    allocate(conv1_v(sx-1:ex+1,sy-1:ey+1,sz_uv:ez_uv))
-    
-    allocate(csf_v0(sx-1:ex+1,sy-1:ey+1,sz_uv:ez_uv))
-    allocate(csf_v1(sx-1:ex+1,sy-1:ey+1,sz_uv:ez_uv))
-    
-    allocate(diffusion1_v(sx-1:ex+1,sy-1:ey+1,sz_uv:ez_uv))
-    
-    allocate(conv0_w(sx-1:ex+1,sy-1:ey+1,sz_w:ez_w))
-    allocate(conv1_w(sx-1:ex+1,sy-1:ey+1,sz_w:ez_w))
-    
-    allocate(csf_w0(sx-1:ex+1,sy-1:ey+1,sz_w:ez_w))
-    allocate(csf_w1(sx-1:ex+1,sy-1:ey+1,sz_w:ez_w))
-    
-    allocate(diffusion1_w(sx-1:ex+1,sy-1:ey+1,sz_w:ez_w))
-    
-    
-    !----- Arrays for the Selective Frequency Damping -----!
-    
-    if ( if_sfd ) then
-       
-       allocate(vx_bar(sx-1:ex+1,sy-1:ey+1,sz_uv:ez_uv))
-       allocate(vy_bar(sx-1:ex+1,sy-1:ey+1,sz_uv:ez_uv))
-       allocate(vz_bar(sx-1:ex+1,sy-1:ey+1,sz_w :ez_w ))
-       
-       allocate(fx_sfd(sx-1:ex+1,sy-1:ey+1,sz_uv:ez_uv))
-       allocate(fy_sfd(sx-1:ex+1,sy-1:ey+1,sz_uv:ez_uv))
-       allocate(fz_sfd(sx-1:ex+1,sy-1:ey+1,sz_w :ez_w ))
-      
-       if (if_exact_restart_sfd) then
 
-          call dataload_exact_sfd(vx_bar,vy_bar,vz_bar,fx_sfd,fy_sfd,fz_sfd)   
-
-       else 
-          vx_bar = vx
-       	  vy_bar = vy
-          vz_bar = vz
-        
-          fx_sfd = 0.0D+00
-          fy_sfd = 0.0D+00
-          fz_sfd = 0.0D+00
-       endif
-    endif
-
-    !----- Initialization -----!
-
-    conv0_u = 0.d0
-    conv1_u = 0.d0
-    
-    diffusion1_u = 0.d0
-    
-    csf_u0 = 0.d0
-    csf_u1 = 0.d0
-    
-    conv0_v = 0.d0
-    conv1_v = 0.d0
-    
-    diffusion1_v = 0.d0
-    
-    csf_v0 = 0.d0
-    csf_v1 = 0.d0
-    
-    conv0_w = 0.d0
-    conv1_w = 0.d0
-    
-    diffusion1_w = 0.d0
-    
-    csf_w0 = 0.d0
-    csf_w1 = 0.d0
-    
+    !----- Begining of the time loop -----!
+  
     Time_Loop : do istep = 1,nsteps
        
        !----- Computing the CFL number -----!
@@ -123,7 +46,6 @@ contains
        if ( my_id == master_id ) then
           write(*,*) 'Iteration : ', istep, 'Volume phase 2 : ', volume
        endif
-
        
        !----- Advance the levelset equation -----!
        
@@ -135,7 +57,11 @@ contains
        
        !----- Impose the divergence-free constraint -----!
        
-       call Poisson_solver(phi,vx,vy,vz,pres)
+       call divergence(div, vx, vy, vz)
+       if (istep .gt. 1) pres = 2*pres - pres_old
+       call poisson_solver(x=pres, b=div/dt, maxiter=max_iteration_poisson, tol=tolerance_poisson)
+       pres_old = pres
+       call pressure_correction(vx, vy, vz, pres, phi)
        
        !----- Performs any required runtime post-processing -----!
        
@@ -146,50 +72,23 @@ contains
        call exchange2d(vy,stride_uv_xz,stride_uv_yz,neighbours,ex,ey,ez_uv,sx,sy,sz_uv,comm2d_quasiperiodic)
        call exchange2d(vz, stride_w_xz, stride_w_yz,neighbours,ex,ey,ez_w, sx,sy,sz_w,comm2d_quasiperiodic)
        call exchange2d(pres,stride_p_xz,stride_p_yz,neighbours,ex,ey,ez_p,sx,sy,sz_p,comm2d_quasiperiodic)
-
-!!$       call get_curvature_original(curvature,phi)
-       call get_curvature(curvature,phi)
        
        !----- Periodic output to files -----!
        
-       if( mod(istep,iostep).eq.0 ) then
-          
+       if( mod(istep,iostep).eq.0 ) then          
           call outpost_exact(vx,vy,vz,pres,phi,'   ')
-          if (if_sfd .and. if_exact_restart_save) then
-              call backup_exactrest_sfd(vx_bar,vy_bar,vz_bar,fx_sfd,fy_sfd,fz_sfd)
-          endif
        end if
        
     end do Time_Loop
-
-    !----- Deallocation -----!
-
-    deallocate(conv0_u,conv1_u)
-    deallocate(csf_u0,csf_u1)
-    deallocate(diffusion1_u)
-    deallocate(conv0_v,conv1_v)
-    deallocate(csf_v0,csf_v1)
-    deallocate(diffusion1_v)
-    deallocate(conv0_w,conv1_w)
-    deallocate(csf_w0,csf_w1)
-    deallocate(diffusion1_w)
-    
-    !----- Arrays for the Selective Frequency Damping -----!
-    
-    if ( if_sfd ) then
-       
-       deallocate(vx_bar,vy_bar,vz_bar)
-       deallocate(fx_sfd,fy_sfd,fz_sfd)
-       
-    endif
-
     
     return
   end subroutine tpls_dns
 
-  subroutine tpls_linear_stability(ub,vb,wb,prb,phi_b)
+  subroutine linear_stability(ub,vb,wb,prb,phi_b)
 
     use tpls_constants
+    use tpls_fluid
+    use tpls_pressure_solver
     use tpls_maths
     use tpls_mpi
     use tpls_io
@@ -239,7 +138,7 @@ contains
     double precision :: alpha, beta
     logical :: is_converged
     integer :: check_convergence
-    double precision :: amplitude = 1.0D-05
+    double precision :: amplitude = 1.0D-06
 
     !----- Working arrays -----!
 
@@ -308,77 +207,24 @@ contains
     call mpi_barrier(comm2d_quasiperiodic,ierr)
 
     call random_number(vxp)
-    call random_number(vyp)
+    if (maxm .gt. 2) then
+       call random_number(vyp)
+    else
+       vyp = 0
+    endif
     call random_number(vzp)
 
     phi_p = 0.0D+00
     prp   = 0.0D+00
 
-    vxp = ub
-    vyp = vb
-    vzp = wb
+    call prt_velocity_bc(vxp, vyp, vzp)
 
-    prp = prb
-    phi_p = phi_b
+    !----- Impose the divergence-free constraint -----!
+       
+    call divergence(prp, vxp, vyp, vzp)
+    call poisson_solver(x=prp, b=prp/dt, maxiter=10*max_iteration_poisson, tol=tolerance_poisson)
+    call pressure_correction(vxp, vyp, vzp, prp, phi_b)
     
-    !----- Inflow boundary condition : u = 0 -----!
-
-    if ( my_id == master_id ) then
-       write(*,*) '--> Imposing the boundary conditions.'
-    endif
-    call mpi_barrier(comm2d_quasiperiodic,ierr)
-
-    if ( sx == 1 ) then       
-       vxp(1,:,:) = 0.0D+00
-       vxp(0,:,:) = 2.0D+00*vxp(1,:,:)-vxp(2,:,:)
-    end if
-    
-    !----- Outflow boundary condition : du/dx = 0 -----!
-    
-    if ( ex == ex_max ) then
-       vxp(ex_max,sy:ey,:)   = vxp(ex_max-1,sy:ey,:)
-       vxp(ex_max+1,sy:ey,:) = 2.d0*vxp(ex_max,sy:ey,:) - vxp(ex_max-1,sy:ey,:)
-    end if
-    
-    !----- No-slip boundary conditions on the walls : u = 0 -----!
-    
-    vxp(:,:,sz_uv) = (1.0D+00/3.0D+00)*vxp(:,:,sz_uv+1)
-    vxp(:,:,ez_uv) = (1.0D+00/3.0D+00)*vxp(:,:,ez_uv-1)
-
-    !----- Inflow boundary condition : v = 0 -----!
-    
-    if ( sx == 1 ) then
-       vyp(0,:,:) = -vyp(1,:,:)
-    end if
-    
-    !----- Outflow boundary condition : dv/dx = 0 -----!
-    
-    if ( ex == ex_max ) then
-       vyp(ex_max+1,sy:ey,:) = vyp(ex_max,sy:ey,:)
-    end if
-    
-    !----- No-slip boundary condition on the walls : v = 0 -----!
-    
-    vyp(:,:,sz_uv) = (1.0D+00/3.0D+00)*vyp(:,:,sz_uv+1)
-    vyp(:,:,ez_uv) = (1.0D+00/3.0D+00)*vyp(:,:,ez_uv-1)
-    
-    !----- No-slip boundary condition on the walls : w = 0 -----!
-    
-    vzp(:,:,0)      = 0.0D+00
-    vzp(:,:,maxn-1) = 0.0D+00
-    
-    !----- Inflow boundary condition : w = 0 -----!
-    
-    if ( sx == 1 ) then
-       vzp(0,:,:) = -vzp(1,:,:)
-    end if
-    
-    !----- Outflow boundary condition : dw/dx = 0 -----!
-    
-    if ( ex == ex_max ) then
-       vzp(ex_max+1,sy:ey,:) = vzp(ex_max,sy:ey,:)
-    end if
-
     !----- Normalized to unit-norm -----!
 
     call inner_product(alpha &
@@ -395,16 +241,10 @@ contains
     prp   = alpha*prp
     phi_p = alpha*phi_p
 
-    call exchange2d(phi_p,stride_p_xz,stride_p_yz,neighbours,ex,ey,ez_p,sx,sy,sz_p,comm2d_quasiperiodic)
-    call exchange2d(vxp,stride_uv_xz,stride_uv_yz,neighbours,ex,ey,ez_uv,sx,sy,sz_uv,comm2d_quasiperiodic)
-    call exchange2d(vyp,stride_uv_xz,stride_uv_yz,neighbours,ex,ey,ez_uv,sx,sy,sz_uv,comm2d_quasiperiodic)
-    call exchange2d(vzp, stride_w_xz, stride_w_yz,neighbours,ex,ey,ez_w, sx,sy,sz_w,comm2d_quasiperiodic)
-    call exchange2d(prp,stride_p_xz,stride_p_yz,neighbours,ex,ey,ez_p,sx,sy,sz_p,comm2d_quasiperiodic)
-
     workx   = ub + amplitude*vxp
     worky   = vb + amplitude*vyp
     workz   = wb + amplitude*vzp
-    workp   = prb
+    workp   = prb + amplitude*prp
     workphi = phi_b
     
     call exchange2d(workphi,stride_p_xz,stride_p_yz,neighbours,ex,ey,ez_p,sx,sy,sz_p,comm2d_quasiperiodic)
@@ -426,64 +266,9 @@ contains
     prp   = (workp   - prb)   / amplitude
     phi_p = (workphi - phi_b) / amplitude
 
-    !----- Inflow boundary condition : u = 0 -----!
 
-    if ( my_id == master_id ) then
-       write(*,*) '--> Imposing the boundary conditions.'
-    endif
-    call mpi_barrier(comm2d_quasiperiodic,ierr)
+    call prt_velocity_bc(vxp, vyp, vzp)
     
-    if ( sx == 1 ) then       
-       vxp(1,:,:) = 0.0D+00
-       vxp(0,:,:) = 2.0D+00*vxp(1,:,:) - vxp(2,:,:)
-    end if
-    
-    !----- Outflow boundary condition : du/dx = 0 -----!
-    
-    if ( ex == ex_max ) then
-       vxp(ex_max,sy:ey,:)   = vxp(ex_max-1,sy:ey,:)
-       vxp(ex_max+1,sy:ey,:) = 2.d0*vxp(ex_max,sy:ey,:) - vxp(ex_max-1,sy:ey,:)
-    end if
-    
-    !----- No-slip boundary conditions on the walls : u = 0 -----!
-    
-    vxp(:,:,sz_uv) = (1.0D+00/3.0D+00)*vxp(:,:,sz_uv+1)
-    vxp(:,:,ez_uv) = (1.0D+00/3.0D+00)*vxp(:,:,ez_uv-1)
-
-    !----- Inflow boundary condition : v = 0 -----!
-    
-    if ( sx == 1 ) then
-       vyp(0,:,:) = -vyp(1,:,:)
-    end if
-    
-    !----- Outflow boundary condition : dv/dx = 0 -----!
-    
-    if ( ex == ex_max ) then
-       vyp(ex_max+1,sy:ey,:) = vyp(ex_max,sy:ey,:)
-    end if
-    
-    !----- No-slip boundary condition on the walls : v = 0 -----!
-    
-    vyp(:,:,sz_uv) = (1.0D+00/3.0D+00)*vyp(:,:,sz_uv+1)
-    vyp(:,:,ez_uv) = (1.0D+00/3.0D+00)*vyp(:,:,ez_uv-1)
-    
-    !----- No-slip boundary condition on the walls : w = 0 -----!
-    
-    vzp(:,:,0)      = 0.d0
-    vzp(:,:,maxn-1) = 0.d0
-    
-    !----- Inflow boundary condition : w = 0 -----!
-    
-    if ( sx == 1 ) then
-       vzp(0,:,:) = -vzp(1,:,:)
-    end if
-    
-    !----- Outflow boundary condition : dw/dx = 0 -----!
-    
-    if ( ex == ex_max ) then
-       vzp(ex_max+1,sy:ey,:) = vzp(ex_max,sy:ey,:)
-    end if
-
     call inner_product(alpha,phi_p,phi_p,vxp,vyp,vzp,vxp,vyp,vzp)
     
     alpha = 1.0D+00/dsqrt(alpha)
@@ -869,7 +654,7 @@ contains
     call mpi_barrier(comm2d_quasiperiodic,ierr)
           
     return
-  end subroutine tpls_linear_stability
+  end subroutine linear_stability
 
   subroutine Arnoldi_factorization(Qx,Qy,Qz,Qp,Qphi,ub,vb,wb,prb,phi_b,H,beta,mstart)
 
@@ -982,57 +767,8 @@ contains
           write(*,*) '--> Imposing the boundary conditions.'
        endif
        call mpi_barrier(comm2d_quasiperiodic,ierr)
-       
-       if ( sx == 1 ) then       
-          vxp(1,:,:) = 0.0D+00
-          vxp(0,:,:) = 2.0D+00*vxp(1,:,:) - vxp(2,:,:)
-       end if
-       
-       !----- Outflow boundary condition : du/dx = 0 -----!
-       
-       if ( ex == ex_max ) then
-          vxp(ex_max,sy:ey,:)   = vxp(ex_max-1,sy:ey,:)
-          vxp(ex_max+1,sy:ey,:) = 2.d0*vxp(ex_max,sy:ey,:) - vxp(ex_max-1,sy:ey,:)
-       end if
-       
-       !----- No-slip boundary conditions on the walls : u = 0 -----!
-       
-       vxp(:,:,sz_uv) = (1.0D+00/3.0D+00)*vxp(:,:,sz_uv+1)
-       vxp(:,:,ez_uv) = (1.0D+00/3.0D+00)*vxp(:,:,ez_uv-1)
-       
-       !----- Inflow boundary condition : v = 0 -----!
-       
-       if ( sx == 1 ) then
-          vyp(0,:,:) = -vyp(1,:,:)
-       end if
-       
-       !----- Outflow boundary condition : dv/dx = 0 -----!
-       
-       if ( ex == ex_max ) then
-          vyp(ex_max+1,sy:ey,:) = vyp(ex_max,sy:ey,:)
-       end if
-       
-       !----- No-slip boundary condition on the walls : v = 0 -----!
-       
-       vyp(:,:,sz_uv) = (1.0D+00/3.0D+00)*vyp(:,:,sz_uv+1)
-       vyp(:,:,ez_uv) = (1.0D+00/3.0D+00)*vyp(:,:,ez_uv-1)
-       
-       !----- No-slip boundary condition on the walls : w = 0 -----!
-       
-       vzp(:,:,0)      = 0.d0
-       vzp(:,:,maxn-1) = 0.d0
-       
-       !----- Inflow boundary condition : w = 0 -----!
-       
-       if ( sx == 1 ) then
-          vzp(0,:,:) = -vzp(1,:,:)
-       end if
-       
-       !----- Outflow boundary condition : dw/dx = 0 -----!
-       
-       if ( ex == ex_max ) then
-          vzp(ex_max+1,sy:ey,:) = vzp(ex_max,sy:ey,:)
-       end if
+
+       call prt_velocity_bc(vxp, vyp, vzp)
        
        call exchange2d(phi_p,stride_p_xz,stride_p_yz,neighbours,ex,ey,ez_p,sx,sy,sz_p,comm2d_quasiperiodic)
        call exchange2d(vxp,stride_uv_xz,stride_uv_yz,neighbours,ex,ey,ez_uv,sx,sy,sz_uv,comm2d_quasiperiodic)
@@ -1154,5 +890,76 @@ contains
     
     return
   end subroutine Arnoldi_factorization
+
+  subroutine prt_velocity_bc(vx, vy, vz)
+
+    use tpls_constants
+    use tpls_mpi
+    use mpi
+
+    !----- Inputs/Outputs -----!
+
+    double precision, dimension(sx-1:ex+1, sy-1:ey+1, sz_uv:ez_uv), intent(inout) :: vx, vy
+    double precision, dimension(sx-1:ex+1, sy-1:ey+1, sz_w:ez_w), intent(inout) :: vz
+
+    !----- Inflow boundary condition : u = 0 -----!
+
+    if ( sx == 1 ) then
+       vx(1, :, :) = 0
+       vx(0, :, :) = 2*vx(1, :, :) - vx(2, :, :)     
+    end if
+    
+    !----- Outflow boundary condition : du/dx = 0 -----!
+    
+    if ( ex == ex_max ) then       
+       vx(ex_max+1,:,:) = 2*vx(ex_max,:,:) - vx(ex_max-1, :, :)
+    end if
+    
+    !----- No-slip boundary conditions on the walls : u = 0 -----!
+
+    vx(:,:,sz_uv) = (1.0D+00/3.0D+00)*vx(:,:,sz_uv+1)
+    vx(:,:,ez_uv) = (1.0D+00/3.0D+00)*vx(:,:,ez_uv-1)
+
+        !----- Inflow boundary condition : v = 0 -----!
+    
+    if ( sx == 1 ) then
+       vy(0,:,:) = -vy(1,:,:)
+    end if
+    
+    !----- Outflow boundary condition : dv/dx = 0 -----!
+    
+    if ( ex == ex_max ) then
+       vy(ex_max+1,:,:) = 2*vy(ex_max,:,:) - vy(ex_max-1,:,:)
+    end if
+    
+    !----- No-slip boundary condition on the walls : v = 0 -----!
+    
+    vy(:,:,sz_uv) = (1.0D+00/3.0D+00)*vy(:,:,sz_uv+1)
+    vy(:,:,ez_uv) = (1.0D+00/3.0D+00)*vy(:,:,ez_uv-1)
+    
+    !----- No-slip boundary condition on the walls : w = 0 -----!
+    
+    vz(:,:,0)      = 0.0D+00
+    vz(:,:,maxn-1) = 0.0D+00
+    
+    !----- Inflow boundary condition : w = 0 -----!
+    
+    if ( sx == 1 ) then
+       vz(0,:,:) = -vz(1,:,:)       
+    end if
+    
+    !----- Outflow boundary condition : dw/dx = 0 -----!
+    
+    if ( ex == ex_max ) then
+       vz(ex_max+1,:,:) = 2*vz(ex_max,:,:) - vz(ex_max-1, :, :)
+    end if
+    
+    call exchange2d(vx,stride_uv_xz,stride_uv_yz,neighbours,ex,ey,ez_uv,sx,sy,sz_uv,comm2d_quasiperiodic)
+    call exchange2d(vy,stride_uv_xz,stride_uv_yz,neighbours,ex,ey,ez_uv,sx,sy,sz_uv,comm2d_quasiperiodic)
+    call exchange2d(vz,stride_w_xz, stride_w_yz, neighbours,ex,ey, ez_w,sx,sy, sz_w,comm2d_quasiperiodic)
+    
+    return
+  end subroutine prt_velocity_bc
+
 
 end module tpls_solver
