@@ -67,7 +67,7 @@ module tpls_constants
   !----- Linear stability setup -----!
 
   integer :: krylov_dim
-  parameter ( krylov_dim = 48 )
+  parameter ( krylov_dim = 96 )
 
   !----- Runtime statistics -----!
 

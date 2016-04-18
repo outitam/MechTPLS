@@ -3,7 +3,6 @@ program mainprogram
   use tpls_constants
   use tpls_mpi
   use tpls_configuration
-  use tpls_pressure_solver
   use tpls_userchk
   use tpls_io
   use tpls_solver
@@ -27,7 +26,6 @@ program mainprogram
   parameter ( pi = 4.0D+00*atan(1.0D+00) )
 
   double precision :: cfl
-  double precision, dimension(1000000) :: dummy
 
   character*80 filename
 
@@ -36,20 +34,10 @@ program mainprogram
 
   call read_parameters()
 
+  call SRJ_weights()
+
   call initialize_tpls_mpi
-  
-  if ( my_id == 0 ) then
-     call SRJ_weights(dummy)
-  endif
 
-  call mpi_bcast(max_srj, 1, mpi_integer, 0, comm2d_quasiperiodic, ierr)
-  allocate(relax_srj(1:max_srj))
-  relax_srj = 0
-
-  call mpi_bcast(dummy, 100000, mpi_double_precision, 0, comm2d_quasiperiodic, ierr)
-
-  relax_srj = dummy(1:max_srj)
-  
   total_time    = mpi_wtime()
   time_levelset = 0.0D+00
   time_fluid    = 0.0D+00
@@ -95,7 +83,7 @@ program mainprogram
 
   else
 
-     call linear_stability(vx,vy,vz,pres,phi)
+     call tpls_linear_stability(vx,vy,vz,pres,phi)
 
   endif
   

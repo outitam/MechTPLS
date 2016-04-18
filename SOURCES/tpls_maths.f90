@@ -4,38 +4,6 @@ module tpls_maths
 
 contains
 
-    subroutine divergence(div,vx,vy,vz)
-
-    use tpls_constants
-    use tpls_mpi
-    use mpi
-    implicit none
-    
-    !----- Inputs -----!
-
-    double precision, dimension(sx-1:ex+1,sy-1:ey+1,0:maxn-2), intent(in) :: vx, vy
-    double precision, dimension(sx-1:ex+1,sy-1:ey+1,0:maxn-1), intent(in) :: vz
-
-    !----- Output -----!
-
-    double precision, dimension(sx-1:ex+1,sy-1:ey+1,0:maxn), intent(out) :: div
-
-    !----- Intermediate arrays -----!
-
-    integer :: i,j,k
-    double precision :: scalar_plusx,scalar_minusx
-
-    div = 0.0D+00
-    
-    div(sx:ex,sy:ey,1:maxn-1) =                                           &
-           ( vx(sx+1:ex+1,sy:ey,0:maxn-2) - vx(sx:ex,sy:ey,0:maxn-2) )/dx &
-         + ( vy(sx:ex,sy+1:ey+1,0:maxn-2) - vy(sx:ex,sy:ey,0:maxn-2) )/dy &
-         + ( vz(sx:ex,sy:ey,1:maxn-1)     - vz(sx:ex,sy:ey,0:maxn-2) )/dz
-    
-    return
-  end subroutine divergence
-
-
 
   subroutine Least_Squares(A,x,b,nr,nc)
 
@@ -322,7 +290,7 @@ contains
     
     logical :: select_eigenvalue
     double precision :: wr, wi
-    double precision :: delta = 0.05
+    double precision :: delta = 0.1D0
     
     if ( sqrt(wr**2. + wi**2.) .GT. 1.d0-delta ) then
        select_eigenvalue = .true.
@@ -405,75 +373,50 @@ contains
 
     integer :: i, j, k
     double precision :: temp
-    double precision, dimension(sx:ex, sy:ey, 0:maxn-2) :: work1, work2
 
     !----- Kinetic energy -----!
 
-    ip = 0
-    
-    work1 = .5* ( vx1(sx:ex, sy:ey, :) + vx1(sx+1:ex+1, sy:ey, :) )
-    work2 = .5* ( vx2(sx:ex, sy:ey, :) + vx2(sx+1:ex+1, sy:ey, :) )
+    temp = 0.0D+00
 
-    call scalar_product(temp, work1, work2, size(work1))
-    ip = ip + temp
+    do k = 0,maxn-2
+       do j = sy,ey
+          do i = sx,ex
+             temp = temp &
+                  + (vx1(i,j,k) + vx1(i+1,j,k)) * (vx2(i,j,k) + vx2(i+1,j,k))/4.0D+00 &
+                  + (vy1(i,j,k) + vy1(i,j+1,k)) * (vy2(i,j,k) + vy2(i,j+1,k))/4.0D+00 &
+                  + (vz1(i,j,k) + vz1(i,j,k+1)) * (vz2(i,j,k) + vz2(i,j,k+1))/4.0D+00
+          enddo
+       enddo
+    enddo
 
-    if ( maxm .gt. 2 ) then
-       work1 = .5* ( vy1(sx:ex, sy:ey, :) + vy1(sx:ex, sy+1:ey+1, :) )
-       work2 = .5* ( vy2(sx:ex, sy:ey, :) + vy2(sx:ex, sy+1:ey+1, :) )
-       
-       call scalar_product(temp, work1, work2, size(work1))
-       ip = ip + temp
+    if ((my_id .eq. 127) .and. (istep .gt. 99)) then
+       write(*,*) 'temporary value after stupid integral at istep =', istep
+       write(*,*) 'temp', temp
     endif
+    !----- Interfacial energy -----!
 
-    work1 = .5* ( vz1(sx:ex, sy:ey, 0:maxn-2) + vz1(sx:ex, sy:ey, 1:maxn-1) )
-    work2 = .5* ( vz2(sx:ex, sy:ey, 0:maxn-2) + vz2(sx:ex, sy:ey, 1:maxn-1) )
-
-    call scalar_product(temp, work1, work2, size(work1))
-    ip = ip + temp
-
-    ip = ip*(dx*dy*dz)
+    if ( scap.ne.0 ) then 
+       temp = temp + 0.0D+00
+    endif
     
-!!$    temp = 0.0D+00
-!!$
-!!$    do k = 0,maxn-2
-!!$       do j = sy,ey
-!!$          do i = sx,ex
-!!$             temp = temp &
-!!$                  + (vx1(i,j,k) + vx1(i+1,j,k)) * (vx2(i,j,k) + vx2(i+1,j,k))/4.0D+00 &
-!!$                  + (vy1(i,j,k) + vy1(i,j+1,k)) * (vy2(i,j,k) + vy2(i,j+1,k))/4.0D+00 &
-!!$                  + (vz1(i,j,k) + vz1(i,j,k+1)) * (vz2(i,j,k) + vz2(i,j,k+1))/4.0D+00
-!!$          enddo
-!!$       enddo
-!!$    enddo
-!!$
-!!$    if ((my_id .eq. 127) .and. (istep .gt. 99)) then
-!!$       write(*,*) 'temporary value after stupid integral at istep =', istep
-!!$       write(*,*) 'temp', temp
-!!$    endif
-!!$    !----- Interfacial energy -----!
-!!$
-!!$    if ( scap.ne.0 ) then 
-!!$       temp = temp + 0.0D+00
-!!$    endif
-!!$    
-!!$    temp = temp*dx*dz*dy
-!!$
-!!$    if (istep .gt. 99) then
-!!$    tempin(1)=temp
-!!$    tempin(2)=my_id   
-!!$    call mpi_reduce(tempin, tempout, 1, MPI_2DOUBLE_PRECISION, MPI_MAXLOC, master_id, &
-!!$                                                               comm2d_quasiperiodic, ierr);
-!!$ 
-!!$    if (my_id .eq. master_id) write(*,*) 'maximum temp before mpi_allreduce is', tempout(1)
-!!$    if (my_id .eq. master_id) write(*,*) 'proc. ', tempout(2)
-!!$    endif
-!!$ 
-!!$    call mpi_allreduce(temp,IP,1,MPI_DOUBLE_PRECISION,MPI_SUM,comm2d_quasiperiodic,ierr)
-!!$
-!!$    if ((my_id .eq. 127) .and. (istep .gt. 99)) then
-!!$       write(*,*) 'temporary value just after mpi_allreduce at istep =', istep
-!!$       write(*,*) 'temp', temp
-!!$    endif
+    temp = temp*dx*dz*dy
+
+    if (istep .gt. 99) then
+    tempin(1)=temp
+    tempin(2)=my_id   
+    call mpi_reduce(tempin, tempout, 1, MPI_2DOUBLE_PRECISION, MPI_MAXLOC, master_id, &
+                                                               comm2d_quasiperiodic, ierr);
+ 
+    if (my_id .eq. master_id) write(*,*) 'maximum temp before mpi_allreduce is', tempout(1)
+    if (my_id .eq. master_id) write(*,*) 'proc. ', tempout(2)
+    endif
+ 
+    call mpi_allreduce(temp,IP,1,MPI_DOUBLE_PRECISION,MPI_SUM,comm2d_quasiperiodic,ierr)
+
+    if ((my_id .eq. 127) .and. (istep .gt. 99)) then
+       write(*,*) 'temporary value just after mpi_allreduce at istep =', istep
+       write(*,*) 'temp', temp
+    endif
 
     return
   end subroutine inner_product
@@ -501,40 +444,36 @@ contains
     return
   end subroutine get_difference
 
-  subroutine norm(norme, x, n)
+  subroutine norm(u,sx_,sy_,sz_,ex_,ey_,ez_,norme)
 
     use tpls_constants
     use tpls_mpi
     use mpi
     implicit none
 
-    integer, intent(in) :: n
-    double precision, dimension(n), intent(in) :: x
+    integer :: ex_,ey_,ez_,sx_,sy_,sz_
+    double precision, dimension(sx_-1:ex_+1,sy_-1:ey_+1,sz_-1:ez_+1) :: u
     double precision :: norme, dummy
 
-    dummy = dot_product(x,x)
-    call mpi_allreduce(dummy, norme, 1, mpi_double_precision, mpi_sum, comm2d_quasiperiodic, ierr)
-    norme = sqrt(norme)
+    integer :: i, j, k, l
+
+    dummy = 0.d0
+
+    do k = sz_-1,ez_+1
+       do j = sy_-1,ey_+1
+          do i = sx_-1,ex_+1
+
+             dummy = dummy + u(i,j,k)**2
+
+          enddo
+       enddo
+    enddo
+
+    call mpi_allreduce(dummy,norme,1,MPI_DOUBLE_PRECISION,MPI_SUM,comm2d_quasiperiodic,ierr)
+    norme = dsqrt(norme)
 
     return
   end subroutine norm
-
-  subroutine scalar_product(sp, x, y, n)
-
-    use tpls_constants
-    use tpls_mpi
-    use mpi
-    implicit none
-
-    integer, intent(in) :: n
-    double precision, dimension(n), intent(in) :: x, y
-    double precision :: sp, dummy
-
-    dummy = dot_product(x,y)
-    call mpi_allreduce(dummy, sp, 1, mpi_double_precision, mpi_sum, comm2d_quasiperiodic, ierr)
-    
-    return
-  end subroutine scalar_product
 
   double precision function sign_of(a)
 

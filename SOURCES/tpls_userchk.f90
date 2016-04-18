@@ -47,11 +47,31 @@ contains
     !----- Miscellaneous -----!
 
     integer :: i, j, k, n, ifich = 111, ifich2=123, ifich3=134
-    double precision :: residu, z_val, x_val, y_val, pi, dummy
+    double precision :: residu, z_val, x_val, y_val, pi
 
     pi = 4.0*atan(1.0)
     
     !----- Begining of the subroutine -----!
+
+!!$    if ( istep.EQ.0 ) then 
+!!$
+!!$       do k = 0,maxn
+!!$          do j = sy,ey
+!!$             do i = sx,ex
+!!$
+!!$                z_val = k*dz - dz/2.0D+00 - Lz/2.0D+00
+!!$
+!!$                if ( z_val .GE. 0.0D+00 ) then
+!!$                   phi(i,j,k) =  -z_val + height
+!!$                else
+!!$                   phi(i,j,k) =  z_val + height
+!!$                endif
+!!$
+!!$             enddo
+!!$          enddo
+!!$       enddo
+!!$
+!!$    endif
 
     !----- Computing the residual for steady state monitoring -----!
 
@@ -61,9 +81,9 @@ contains
        allocate(vy_old(sx-1:ex+1,sy-1:ey+1,sz_uv:ez_uv))
        allocate(vz_old(sx-1:ex+1,sy-1:ey+1,sz_w:ez_w))
 
-       vx_old = vx
-       vy_old = vy
-       vz_old = vz
+       vx_old = 0.0D+00
+       vy_old = 0.0D+00
+       vz_old = 0.0D+00
       
        if ( my_id == master_id ) open( unit = ifich , file = 'residu.dat' )
        
@@ -113,30 +133,27 @@ contains
     vy_old = vy - vy_old
     vz_old = vz - vz_old
     
-    if ( (mod(istep, 100) == 0) .and. (istep .gt. 1) ) then
 
-       residu = 0
-       call norm(dummy, vx_old, size(vx_old) )
-       residu = residu + dummy**2
-       call norm(dummy, vy_old, size(vy_old) )
-       residu = residu + dummy**2
-       call norm(dummy, vz_old, size(vz_old) )
-       residu = residu + dummy**2
-       
-       residu = residu*(dx*dy*dz)
-       residu = dsqrt(residu)
-       residu = residu/dt
-       
-       if ( my_id == master_id ) then
-          write(ifich,*) istep, residu
-          call flush(ifich)
-       endif
 
-    endif
+    call inner_product(residu &
+         , phi, phi &
+         , vx_old, vy_old, vz_old &
+         , vx_old, vy_old, vz_old)
+
+ 
+    residu = residu/(Lx*Ly*Lz)
+    residu = dsqrt(residu)
+    residu = residu/dt
 
     vx_old = vx
     vy_old = vy
     vz_old = vz
+
+
+    if ( my_id == master_id ) then
+       write(ifich,*) istep, residu
+       call flush(ifich)
+    endif
     
     if ( istep == nsteps ) then
        if ( my_id == master_id ) close(ifich)
@@ -246,11 +263,11 @@ contains
              u_inlet(k) = 1.0D+00/4.0D+00*(1.0D+00-eta(k)**2.0D+00)
           endif
        endif
+!!$       u_inlet(k) = 1.0 - (z_val(k+1)/2.0D+00)**2.0D+00
        
     enddo
 !!$
 !!$    u_inlet = 0.0D+00
-!!$    phi_inlet = 10
     
     return
   end subroutine user_inflow
@@ -303,9 +320,10 @@ contains
        enddo
     enddo
 
-    vy = 0.0D+00
-    vz = 0.0D+00
-    pressure = 0.0D+00
+    vy  = 0.0D+00
+    vz  = 0.0D+00
+
+!!$    pressure = 0.0D+00
 
     return
   end subroutine user_initial_conditions

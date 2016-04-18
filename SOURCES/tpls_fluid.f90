@@ -14,9 +14,6 @@ module tpls_fluid
   double precision, dimension(:,:,:), allocatable :: diffusion1_v
   double precision, dimension(:,:,:), allocatable :: diffusion1_w
 
-  private
-  public :: advance_fluid, pressure_correction
-
 contains
 
   subroutine advance_fluid(phi,vx,vy,vz,pressure)
@@ -38,11 +35,15 @@ contains
 
     double precision, dimension(sx-1:ex+1,sy-1:ey+1,sz_uv:ez_uv) :: RHS_u, RHS_v
     double precision, dimension(sx-1:ex+1,sy-1:ey+1,sz_w:ez_w)   :: RHS_w
+    double precision, dimension(0:maxn-2) :: u_inlet
+    double precision, dimension(0:maxn) :: phi_inlet
     
     integer :: i, j, k
     double precision :: dummy, max_dummy
 
     t_temp = mpi_wtime()
+
+    call user_inflow(u_inlet,phi_inlet)
 
     !----- Compute the right hand side for the velocity equation -----
 
@@ -51,10 +52,80 @@ contains
     !----- Update the velocity ------!
     
     vx = RHS_u
-    vy = RHS_v
-    vz = RHS_w
+    
+    !----- Inflow boundary condition : u = u_inlet -----!
+    
+    if ( sx == 1 ) then
+       
+       do j = sy,ey
+          vx(0,j,:) = 2.0D+00*u_inlet(:) - vx(2,j,:)
+          vx(1,j,:) = u_inlet(:)
+       enddo
+       
+    end if
+    
+    !----- Outflow boundary condition : du/dx = 0 -----!
+    
+    if ( ex == ex_max ) then       
+       vx(ex_max+1,:,:) = vx(ex_max,:,:)
+    end if
+    
+    !----- No-slip boundary conditions on the walls : u = 0 -----!
 
-    call velocity_bc(vx, vy, vz)
+!!$    vx(:,:,sz_uv) = (1.0D+00/3.0D+00)*vx(:,:,sz_uv+1)
+!!$    vx(:,:,ez_uv) = (1.0D+00/3.0D+00)*vx(:,:,ez_uv-1)
+    vx(:,:,sz_uv) = (2.0D+00/3.0D+00)*vx(:,:,sz_uv+1) - (1.0D+00/5.0D+00)*vx(:,:,sz_uv+2)
+    vx(:,:,ez_uv) = (2.0D+00/3.0D+00)*vx(:,:,ez_uv-1) - (1.0D+00/5.0D+00)*vx(:,:,ez_uv-2)
+
+
+
+    vy = RHS_v
+    
+    !----- Inflow boundary condition : v = 0 -----!
+    
+    if ( sx == 1 ) then
+       vy(0,:,:) = -vy(1,:,:)
+    end if
+    
+    !----- Outflow boundary condition : dv/dx = 0 -----!
+    
+    if ( ex == ex_max ) then
+       vy(ex_max+1,:,:) = vy(ex_max,:,:)
+    end if
+    
+    !----- No-slip boundary condition on the walls : v = 0 -----!
+    
+!!$    vy(:,:,sz_uv) = (1.0D+00/3.0D+00)*vy(:,:,sz_uv+1)
+!!$    vy(:,:,ez_uv) = (1.0D+00/3.0D+00)*vy(:,:,ez_uv-1)
+    vy(:,:,sz_uv) = (2.0D+00/3.0D+00)*vy(:,:,sz_uv+1) - (1.0D+00/5.0D+00)*vy(:,:,sz_uv+2)
+    vy(:,:,ez_uv) = (2.0D+00/3.0D+00)*vy(:,:,ez_uv-1) - (1.0D+00/5.0D+00)*vy(:,:,ez_uv-2)
+
+
+
+
+    vz = RHS_w
+    
+    !----- No-slip boundary condition on the walls : w = 0 -----!
+    
+    vz(:,:,0)      = 0.0D+00
+    vz(:,:,maxn-1) = 0.0D+00
+    
+    !----- Inflow boundary condition : w = 0 -----!
+    
+    if ( sx == 1 ) then
+       vz(0,:,:) = -vz(1,:,:)       
+    end if
+    
+    !----- Outflow boundary condition : dw/dx = 0 -----!
+    
+    if ( ex == ex_max ) then
+       vz(ex_max+1,:,:) = vz(ex_max,:,:)
+    end if
+
+
+    call exchange2d(vx,stride_uv_xz,stride_uv_yz,neighbours,ex,ey,ez_uv,sx,sy,sz_uv,comm2d_quasiperiodic)
+    call exchange2d(vy,stride_uv_xz,stride_uv_yz,neighbours,ex,ey,ez_uv,sx,sy,sz_uv,comm2d_quasiperiodic)
+    call exchange2d(vz,stride_w_xz, stride_w_yz, neighbours,ex,ey, ez_w,sx,sy, sz_w,comm2d_quasiperiodic)
 
     dummy = maxval(vx)
     call mpi_allreduce(dummy,max_dummy,1,MPI_DOUBLE_PRECISION,MPI_MAX,comm2d_quasiperiodic,ierr)
@@ -75,6 +146,7 @@ contains
        write(*,*)'Iteration : ', istep, 'max-w vel    is ', max_dummy
     endif
 
+
     time_fluid = time_fluid + (mpi_wtime() - t_temp)
     
     return
@@ -84,9 +156,9 @@ contains
 
     use tpls_constants
     use tpls_mpi
-    use tpls_levelset
+    use tpls_pressure_solver
     use tpls_configuration
-    use tpls_selective_frequency_damping, only : selective_frequency_damping
+    use tpls_selective_frequency_damping
     use mpi
     use tpls_io
     implicit none
@@ -119,59 +191,6 @@ contains
 
     integer :: i, j, k
 
-    !----- Initialization ( istep == 1 ) -----!
-    
-    if (istep.eq.1) then
-       allocate(conv0_u(sx-1:ex+1,sy-1:ey+1,sz_uv:ez_uv))
-       allocate(conv1_u(sx-1:ex+1,sy-1:ey+1,sz_uv:ez_uv))
-       
-       allocate(csf_u0(sx-1:ex+1,sy-1:ey+1,sz_uv:ez_uv))
-       allocate(csf_u1(sx-1:ex+1,sy-1:ey+1,sz_uv:ez_uv))
-       
-       allocate(diffusion1_u(sx-1:ex+1,sy-1:ey+1,sz_uv:ez_uv))
-       
-       allocate(conv0_v(sx-1:ex+1,sy-1:ey+1,sz_uv:ez_uv))
-       allocate(conv1_v(sx-1:ex+1,sy-1:ey+1,sz_uv:ez_uv))
-       
-       allocate(csf_v0(sx-1:ex+1,sy-1:ey+1,sz_uv:ez_uv))
-       allocate(csf_v1(sx-1:ex+1,sy-1:ey+1,sz_uv:ez_uv))
-       
-       allocate(diffusion1_v(sx-1:ex+1,sy-1:ey+1,sz_uv:ez_uv))
-       
-       allocate(conv0_w(sx-1:ex+1,sy-1:ey+1,sz_w:ez_w))
-       allocate(conv1_w(sx-1:ex+1,sy-1:ey+1,sz_w:ez_w))
-       
-       allocate(csf_w0(sx-1:ex+1,sy-1:ey+1,sz_w:ez_w))
-       allocate(csf_w1(sx-1:ex+1,sy-1:ey+1,sz_w:ez_w))
-       
-       allocate(diffusion1_w(sx-1:ex+1,sy-1:ey+1,sz_w:ez_w))
-
-       conv0_u = 0.d0
-       conv1_u = 0.d0
-       
-       diffusion1_u = 0.d0
-       
-       csf_u0 = 0.d0
-       csf_u1 = 0.d0
-       
-       conv0_v = 0.d0
-       conv1_v = 0.d0
-       
-       diffusion1_v = 0.d0
-       
-       csf_v0 = 0.d0
-       csf_v1 = 0.d0
-       
-       conv0_w = 0.d0
-       conv1_w = 0.d0
-       
-       diffusion1_w = 0.d0
-       
-       csf_w0 = 0.d0
-       csf_w1 = 0.d0
-       
-    endif
-
     !----- Compute the density array -----!
 
     call get_density(density,phi)
@@ -181,15 +200,9 @@ contains
     call get_viscosity(viscosity,phi)
     
     !----- Compute the surface tension force -----!
-
-    if ( scap .ne. 0.0D+00 ) then
-       call compute_csf(csf_u2,csf_v2,csf_w2,phi,density)
-    else
-       csf_u2 = 0
-       csf_v2 = 0
-       csf_w2 = 0
-    endif
-
+    
+    call compute_csf(csf_u2,csf_v2,csf_w2,phi,density)
+    
     !----- Compute the diffusive terms -----!
     
     call get_diffusion_all(diffusion2_u,diffusion2_v,diffusion2_w,viscosity,density,vx,vy,vz)
@@ -235,7 +248,7 @@ contains
 
     if ( if_sfd ) call selective_frequency_damping(RHS_u,RHS_v,RHS_w &
          , vx, vy, vz)
-    
+
     call exchange2d(RHS_u,stride_uv_xz,stride_uv_yz,neighbours,ex,ey,ez_uv,sx,sy,sz_uv,comm2d_quasiperiodic)
     call exchange2d(RHS_v,stride_uv_xz,stride_uv_yz,neighbours,ex,ey,ez_uv,sx,sy,sz_uv,comm2d_quasiperiodic)
     call exchange2d(RHS_w,stride_w_xz, stride_w_yz, neighbours,ex,ey, ez_w,sx,sy, sz_w,comm2d_quasiperiodic)
@@ -261,6 +274,7 @@ contains
     
     csf_w0 = csf_w1
     csf_w1 = csf_w2
+   
 
     if (if_exact_restart_save) then 
        if( mod(istep,iostep).eq.0 .and. (istep .gt. 0)) then
@@ -270,18 +284,6 @@ contains
        endif
     endif
 
-    if (istep.eq.nsteps) then
-       deallocate(conv0_u,conv1_u)
-       deallocate(csf_u0,csf_u1)
-       deallocate(diffusion1_u)
-       deallocate(conv0_v,conv1_v)
-       deallocate(csf_v0,csf_v1)
-       deallocate(diffusion1_v)
-       deallocate(conv0_w,conv1_w)
-       deallocate(csf_w0,csf_w1)
-       deallocate(diffusion1_w)
-    endif
-    
     return
   end subroutine make_rhs_velocity
   
@@ -358,10 +360,15 @@ contains
     endif
 
     if ( ex == ex_max ) then
-       csf_u(ex_max+1,:,:) = 2*csf_u(ex_max,:,:) - csf_u(ex_max-1,:,:)
-       csf_v(ex_max+1,:,:) = 2*csf_v(ex_max,:,:) - csf_v(ex_max-1,:,:)
-       csf_w(ex_max+1,:,:) = 2*csf_w(ex_max,:,:) - csf_w(ex_max-1,:,:)
+       csf_u(ex_max+1,:,:) = 2.0D+0*csf_u(ex_max,:,:) - csf_u(ex_max-1,:,:)
+       csf_v(ex_max+1,:,:) = 2.0D+0*csf_v(ex_max,:,:) - csf_v(ex_max-1,:,:)
+       csf_w(ex_max+1,:,:) = 2.0D+0*csf_w(ex_max,:,:) - csf_w(ex_max-1,:,:)
     endif
+
+    call exchange2d(csf_u,stride_uv_xz,stride_uv_yz,neighbours,ex,ey,ez_uv,sx,sy,sz_uv,comm2d_quasiperiodic)
+    call exchange2d(csf_v,stride_uv_xz,stride_uv_yz,neighbours,ex,ey,ez_uv,sx,sy,sz_uv,comm2d_quasiperiodic)
+    call exchange2d(csf_w,stride_w_xz, stride_w_yz, neighbours,ex,ey, ez_w,sx,sy, sz_w,comm2d_quasiperiodic)
+
     
     return
   end subroutine compute_csf
@@ -391,7 +398,7 @@ contains
 
     !----- Miscellaneous -----!
 
-    double precision :: curvature
+    double precision, dimension(sx-1:ex+1,sy-1:ey+1,0:maxn) :: curvature
 
 
     integer :: i, j, k, n
@@ -403,6 +410,10 @@ contains
     double precision :: d2phidx, d2phidy, d2phidz
     double precision :: d2phidxdy, d2phidxdz, d2phidydz
 
+    double precision, dimension(sx-1:ex+1,sy-1:ey+1,0:maxn,3) :: normal_xp, normal_xm
+    double precision, dimension(sx-1:ex+1,sy-1:ey+1,0:maxn,3) :: normal_yp, normal_ym
+    double precision, dimension(sx-1:ex+1,sy-1:ey+1,0:maxn,3) :: normal_zp, normal_zm
+
     double precision, dimension(27,10) :: A
     double precision, dimension(10)    :: x
     double precision, dimension(27)    :: b
@@ -413,97 +424,89 @@ contains
     pi = 4.0D+00*atan(1.0D+00)
     max_kappa = 1.0D+00/(dmin1(dx,dy,dz))
 
-    fx_csf = 0
-    fy_csf = 0
-    fz_csf = 0
-
     do k = 1,n-1
        do j = sy,ey
           do i = sx,ex
 
-             if ( abs(phi(i,j,k)) .lt. 5*smooth_width ) then
-                
-                !----- Commpute curvature -----!
-                
-                A(:,1)  = 1.0D+00
-                
-                counter = 1
-                do dist_z = -1,1
-                   do dist_y = -1,1
-                      do dist_x = -1,1
-                         
-                         b(counter)   = phi( i + dist_x , j + dist_y , k + dist_z )
-                         
-                         A(counter,2) = dx*dist_x
-                         A(counter,3) = dy*dist_y
-                         A(counter,4) = dz*dist_z
-                         
-                         counter = counter + 1
-                         
-                      enddo
+             !----- Commpute curvature -----!
+
+             A(:,1)  = 1.0D+00
+
+             counter = 1
+             do dist_z = -1,1
+                do dist_y = -1,1
+                   do dist_x = -1,1
+                      
+                      b(counter)   = phi( i + dist_x , j + dist_y , k + dist_z )
+                      
+                      A(counter,2) = dx*dist_x
+                      A(counter,3) = dy*dist_y
+                      A(counter,4) = dz*dist_z
+                      
+                      counter = counter + 1
+                      
                    enddo
                 enddo
-                
-                A(:,5) = 0.5D+00 * A(:,2)**2.00D+00
-                A(:,6) = 0.5D+00 * A(:,3)**2.00D+00
-                A(:,7) = 0.5D+00 * A(:,4)**2.00D+00
-                
-                A(:,8)  = A(:,2)*A(:,3)
-                A(:,9)  = A(:,2)*A(:,4)
-                A(:,10) = A(:,3)*A(:,4)
-                
-                x = 0.0D+00
-                call Least_Squares(A,x,b,27,10)
-                
-                dphidx = x(2)
-                dphidy = x(3)
-                dphidz = x(4)
-                
-                d2phidx = x(5)
-                d2phidy = x(6)
-                d2phidz = x(7)
-                
-                d2phidxdy = x(8)
-                d2phidxdz = x(9)
-                d2phidydz = x(10)
-                
-                norm_val = dphidx**2.0D+00 &
-                     + dphidy**2.0D+00 &
-                     + dphidz**2.0D+00
-                
-                if (norm_val.lt.1.0D-10) then
-                   
-                   curvature = 0.0D+00
-                   
-                else
-                   
-                   term1 = (d2phidx + d2phidy + d2phidz)/(norm_val**0.5D+00)
-                   
-                   term2 = dphidx*dphidx*d2phidx  + dphidy*dphidy*d2phidy  + dphidz*dphidz*d2phidz
-                   term2 = term2/(norm_val**1.5D+00)
-                   
-                   term3 = dphidx*dphidy*d2phidxdy + dphidx*dphidz*d2phidxdz + dphidy*dphidz*d2phidydz
-                   term3 = 2.0D+00*term3/(norm_val**1.5D+00)
-                   
-                   curvature = -(term1-term2-term3)
-                   
-                end if
-
-                if ( curvature.lt.-max_kappa ) then
-                   curvature = -max_kappa
-                end if
-                
-                dirac_phi = Dirac_function(phi(i,j,k))
-                fx_csf(i,j,k) = dirac_phi*scap*curvature*dphidx / dsqrt( norm_val )
-                fy_csf(i,j,k) = dirac_phi*scap*curvature*dphidy / dsqrt( norm_val )
-                fz_csf(i,j,k) = dirac_phi*scap*curvature*dphidz / dsqrt( norm_val )
-
-             endif
+             enddo
              
+             A(:,5) = 0.5D+00 * A(:,2)**2.00D+00
+             A(:,6) = 0.5D+00 * A(:,3)**2.00D+00
+             A(:,7) = 0.5D+00 * A(:,4)**2.00D+00
+             
+             A(:,8)  = A(:,2)*A(:,3)
+             A(:,9)  = A(:,2)*A(:,4)
+             A(:,10) = A(:,3)*A(:,4)
+             
+             x = 0.0D+00
+             call Least_Squares(A,x,b,27,10)
+             
+             dphidx = x(2)
+             dphidy = x(3)
+             dphidz = x(4)
+
+             d2phidx = x(5)
+             d2phidy = x(6)
+             d2phidz = x(7)
+
+             d2phidxdy = x(8)
+             d2phidxdz = x(9)
+             d2phidydz = x(10)
+
+             norm_val = dphidx**2.0D+00 &
+                      + dphidy**2.0D+00 &
+                      + dphidz**2.0D+00
+             
+             if (norm_val.lt.1.0D-10) then
+
+                curvature(i,j,k) = 0.0D+00
+
+             else
+
+                term1 = (d2phidx + d2phidy + d2phidz)/(norm_val**0.5D+00)
+                
+                term2 = dphidx*dphidx*d2phidx  + dphidy*dphidy*d2phidy  + dphidz*dphidz*d2phidz
+                term2 = term2/(norm_val**1.5D+00)
+                
+                term3 = dphidx*dphidy*d2phidxdy + dphidx*dphidz*d2phidxdz + dphidy*dphidz*d2phidydz
+                term3 = 2.0D+00*term3/(norm_val**1.5D+00)
+                
+                curvature(i,j,k) = -(term1-term2-term3)
+                
+             end if
+!!$             
+             if ( curvature(i,j,k).lt.-max_kappa ) then
+                curvature(i,j,k) = -max_kappa
+             end if
+             
+             dirac_phi = Dirac_function(phi(i,j,k))
+             fx_csf(i,j,k) = dirac_phi*scap*curvature(i,j,k)*dphidx / dsqrt( norm_val )
+             fy_csf(i,j,k) = dirac_phi*scap*curvature(i,j,k)*dphidy / dsqrt( norm_val )
+             fz_csf(i,j,k) = dirac_phi*scap*curvature(i,j,k)*dphidz / dsqrt( norm_val )
+
           enddo
        enddo
     enddo
-    
+
     fx_csf(:,:,0) = 3.0D+00 * fx_csf(:,:,1) &
          - 3.0D+00/2.D0+00 * fx_csf(:,:,2)  &
          + fx_csf(:,:,3)
@@ -547,6 +550,155 @@ contains
          neighbours,ex,ey,ez_p,sx,sy,sz_p, comm2d_quasiperiodic)
     call exchange2d(fz_csf,stride_p_xz,stride_p_yz, &
          neighbours,ex,ey,ez_p,sx,sy,sz_p, comm2d_quasiperiodic)
+
+
+!!$    !----- Miscellaneous -----!
+!!$
+!!$    integer :: n, i, j, k
+!!$    integer :: im1, ip1
+!!$    integer :: jm1, jp1
+!!$    
+!!$    double precision, dimension(sx-1:ex+1,sy-1:ey+1,0:maxn) :: curvature, fi
+!!$    double precision :: term1, term2, term3
+!!$    double precision :: nrm_val
+!!$    double precision :: dfi_x, dfi_y, dfi_z
+!!$    double precision :: phi_val
+!!$    double precision :: dirac_phi, pi, max_kappa
+!!$    
+!!$    double precision :: d2fi_x, d2fi_y, d2fi_z
+!!$    double precision :: dfi_x_up, dfi_x_down, d2fi_xz
+!!$    double precision :: dfi_y_up, dfi_y_down, d2fi_yz
+!!$    double precision :: dfi_x_in, dfi_x_out, d2fi_xy
+!!$    
+!!$    n = maxn
+!!$    pi = 4.0D+00*atan(1.0D+00)
+!!$    max_kappa = 1.0D+00/(dmin1(dx,dy,dz))
+!!$
+!!$    fi = phi
+!!$    
+!!$    ! First, compute curvature
+!!$    do k = 1,n-1  
+!!$       do j = sy,ey
+!!$          do i = sx,ex
+!!$             
+!!$             ip1 = i+1
+!!$             im1 = i-1
+!!$             jp1 = j+1
+!!$             jm1 = j-1
+!!$                  
+!!$             d2fi_x = (fi(ip1,j,k)-2.d0*fi(i,j,k)+fi(im1,j,k))/(dx**2.d0)
+!!$             d2fi_y = (fi(i,jp1,k)-2.d0*fi(i,j,k)+fi(i,jm1,k))/(dy**2.d0)
+!!$             d2fi_z = (fi(i,j,k+1)-2.d0*fi(i,j,k)+fi(i,j,k-1))/(dz**2.d0)
+!!$             
+!!$             dfi_x = (fi(ip1,j,k)-fi(im1,j,k))/(2.d0*dx)
+!!$             dfi_y = (fi(i,jp1,k)-fi(i,jm1,k))/(2.d0*dy)
+!!$             dfi_z = (fi(i,j,k+1)-fi(i,j,k-1))/(2.d0*dz)
+!!$             
+!!$             dfi_x_up   = (fi(ip1,j,k+1)-fi(im1,j,k+1))/(2.d0*dx)
+!!$             dfi_x_down = (fi(ip1,j,k-1)-fi(im1,j,k-1))/(2.d0*dx)
+!!$             d2fi_xz    = (dfi_x_up-dfi_x_down)/(2.d0*dz)
+!!$             
+!!$             dfi_y_up   = (fi(i,jp1,k+1)-fi(i,jm1,k+1))/(2.d0*dy)
+!!$             dfi_y_down = (fi(i,jp1,k-1)-fi(i,jm1,k-1))/(2.d0*dy)
+!!$             d2fi_yz    = (dfi_y_up-dfi_y_down)/(2.d0*dz)
+!!$             
+!!$             dfi_x_out = (fi(ip1,jp1,k)-fi(im1,jp1,k))/(2.d0*dx)
+!!$             dfi_x_in  = (fi(ip1,jm1,k)-fi(im1,jm1,k))/(2.d0*dx)
+!!$             d2fi_xy   = (dfi_x_out-dfi_x_in)/(2.d0*dy)
+!!$             
+!!$             nrm_val = dfi_x**2.0D+00 &
+!!$                     + dfi_y**2.0D+00 &
+!!$                     + dfi_z**2.0D+00
+!!$             
+!!$             if (nrm_val.lt.1.0D-10) then
+!!$                curvature(i,j,k) = 0.0D+00
+!!$             else
+!!$
+!!$                term1 = (d2fi_x + d2fi_y + d2fi_z)/(nrm_val**0.5D+00)
+!!$                
+!!$                term2 = dfi_x*dfi_x*d2fi_x  + dfi_y*dfi_y*d2fi_y  + dfi_z*dfi_z*d2fi_z
+!!$                term2 = term2/(nrm_val**1.5D+00)
+!!$                
+!!$                term3 = dfi_x*dfi_y*d2fi_xy + dfi_x*dfi_z*d2fi_xz + dfi_y*dfi_z*d2fi_yz
+!!$                term3 = 2.0D+00*term3/(nrm_val**1.5D+00)
+!!$                
+!!$                curvature(i,j,k) = -(term1-term2-term3)
+!!$
+!!$                curvature(i,j,k) = (d2fi_y + d2fi_z)*dfi_x**2.D0+00 &
+!!$                     + (d2fi_x + d2fi_z)*dfi_y**2.0D+00             &
+!!$                     + (d2fi_x + d2fi_y)*dfi_z**2.0D+00             &
+!!$                     - 2.0D+00*dfi_x*dfi_y*d2fi_xy                  &
+!!$                     - 2.0D+00*dfi_x*dfi_z*d2fi_xz                  &
+!!$                     - 2.0D+00*dfi_y*dfi_z*d2fi_yz
+!!$
+!!$                curvature(i,j,k) = -curvature(i,j,k)/(nrm_val**(3.0D+00/2.0D+00))
+!!$                
+!!$             end if
+!!$             
+!!$             if (curvature(i,j,k).gt.max_kappa) then
+!!$                curvature(i,j,k) = max_kappa
+!!$             end if
+!!$             
+!!$          end do
+!!$       end do
+!!$    end do
+!!$    
+!!$    
+!!$    do k = 1,n-1  
+!!$       do j = sy,ey
+!!$          do i = sx,ex
+!!$             
+!!$             ip1 = i+1
+!!$             im1 = i-1
+!!$             jp1 = j+1
+!!$             jm1 = j-1
+!!$             
+!!$             dfi_x = (fi(ip1,j,k)-fi(im1,j,k))/(2.0D+00*dx)
+!!$             dfi_y = (fi(i,jp1,k)-fi(i,jm1,k))/(2.0D+00*dy)
+!!$             dfi_z = (fi(i,j,k+1)-fi(i,j,k-1))/(2.0D+00*dz)
+!!$             
+!!$             nrm_val = dsqrt(dfi_x**2.0D+00 + dfi_y**2.0D+00 + dfi_z**2.0D+00)
+!!$             dfi_x = dfi_x/nrm_val
+!!$             dfi_y = dfi_y/nrm_val
+!!$             dfi_z = dfi_z/nrm_val
+!!$
+!!$             dirac_phi = Dirac_function(fi(i,j,k))
+!!$             
+!!$             fx_csf(i,j,k) = dirac_phi*scap*curvature(i,j,k)*dfi_x
+!!$             fy_csf(i,j,k) = dirac_phi*scap*curvature(i,j,k)*dfi_y
+!!$             fz_csf(i,j,k) = dirac_phi*scap*curvature(i,j,k)*dfi_z
+!!$             
+!!$          end do
+!!$       end do
+!!$    end do
+!!$    
+!!$    fx_csf(:,:,0) = 2.0D+00*fx_csf(:,:,1)  -fx_csf(:,:,2)
+!!$    fx_csf(:,:,n) = 2.0D+00*fx_csf(:,:,n-1)-fx_csf(:,:,n-2)
+!!$    
+!!$    fy_csf(:,:,0) = 2.0D+00*fy_csf(:,:,1)  -fy_csf(:,:,2)
+!!$    fy_csf(:,:,n) = 2.0D+00*fy_csf(:,:,n-1)-fy_csf(:,:,n-2)
+!!$    
+!!$    fz_csf(:,:,0) = 2.0D+00*fz_csf(:,:,1)  -fz_csf(:,:,2)
+!!$    fz_csf(:,:,n) = 2.0D+00*fz_csf(:,:,n-1)-fz_csf(:,:,n-2)
+!!$    
+!!$    if ( sx == 1 ) then
+!!$       fx_csf(0,:,:) = 2.0D+00*fx_csf(1,:,:) - fx_csf(2,:,:)
+!!$       fy_csf(0,:,:) = 2.0D+00*fy_csf(1,:,:) - fy_csf(2,:,:)
+!!$       fz_csf(0,:,:) = 2.0D+00*fz_csf(1,:,:) - fz_csf(2,:,:)
+!!$    end if
+!!$    
+!!$    if ( ex == ex_max ) then
+!!$       fx_csf(ex_max+1,:,:) = 2.0D+00*fx_csf(ex_max,:,:) - fx_csf(ex_max-1,:,:)
+!!$       fy_csf(ex_max+1,:,:) = 2.0D+00*fy_csf(ex_max,:,:) - fy_csf(ex_max-1,:,:)
+!!$       fz_csf(ex_max+1,:,:) = 2.0D+00*fz_csf(ex_max,:,:) - fz_csf(ex_max-1,:,:)
+!!$    end if
+!!$
+!!$    call exchange2d(fx_csf,stride_p_xz,stride_p_yz, &
+!!$         neighbours,ex,ey,ez_p,sx,sy,sz_p, comm2d_quasiperiodic)
+!!$    call exchange2d(fy_csf,stride_p_xz,stride_p_yz, &
+!!$         neighbours,ex,ey,ez_p,sx,sy,sz_p, comm2d_quasiperiodic)
+!!$    call exchange2d(fz_csf,stride_p_xz,stride_p_yz, &
+!!$         neighbours,ex,ey,ez_p,sx,sy,sz_p, comm2d_quasiperiodic)
     
   end subroutine get_csf
 
@@ -791,6 +943,12 @@ contains
           end do
        end do
     end do
+
+
+    call exchange2d(diff_u,stride_uv_xz,stride_uv_yz,neighbours,ex,ey,ez_uv,sx,sy,sz_uv,comm2d_quasiperiodic)
+    call exchange2d(diff_v,stride_uv_xz,stride_uv_yz,neighbours,ex,ey,ez_uv,sx,sy,sz_uv,comm2d_quasiperiodic)
+    call exchange2d(diff_w,stride_w_xz, stride_w_yz, neighbours,ex,ey, ez_w,sx,sy, sz_w,comm2d_quasiperiodic)
+
     
     return
   end subroutine get_diffusion_all
@@ -1093,6 +1251,10 @@ contains
           enddo
        enddo
     enddo
+
+    call exchange2d(conv_u2,stride_uv_xz,stride_uv_yz,neighbours,ex,ey,ez_uv,sx,sy,sz_uv,comm2d_quasiperiodic)
+    call exchange2d(conv_v2,stride_uv_xz,stride_uv_yz,neighbours,ex,ey,ez_uv,sx,sy,sz_uv,comm2d_quasiperiodic)
+    call exchange2d(conv_w2,stride_w_xz, stride_w_yz, neighbours,ex,ey, ez_w,sx,sy, sz_w,comm2d_quasiperiodic)
     
     return
   end subroutine get_conv_all
@@ -1222,6 +1384,15 @@ contains
                 term3 = 2.0D+00*term3/(norm_val**1.5D+00)
                 
                 curvature(i,j,k) = -(term1-term2-term3)
+
+!!$                curvature(i,j,k) = (d2phidy + d2phidz) * dphidx**2.0D+00 &
+!!$                     + (d2phidx + d2phidz) * dphidy**2.0D+00 &
+!!$                     + (d2phidx + d2phidy) * dphidz**2.0D+00 &
+!!$                     - 2.0D+00*dphidx*dphidy*d2phidxdy &
+!!$                     - 2.0D+00*dphidx*dphidz*d2phidxdz &
+!!$                     - 2.0D+00*dphidy*dphidz*d2phidydz
+!!$
+!!$                curvature(i,j,k) = - curvature(i,j,k) / ( norm_val**(3.0D+00/2.0D+00) )
                 
              end if
 
@@ -1235,6 +1406,13 @@ contains
           enddo
        enddo
     enddo
+
+!!$    call mpi_allreduce(local_error,global_error,1,MPI_DOUBLE_PRECISION,MPI_SUM,comm2d_quasiperiodic,ierr)
+!!$    global_error = global_error * dx*dy*dz
+!!$    global_error = dsqrt( global_error )
+!!$    if ( my_id == 0 ) then
+!!$       write(*,*) ' GLOBAL ERROR : ', global_error
+!!$    endif
 
     if ( sx == 1 ) then
        curvature(0,:,:) = 3.0D+00 * curvature(1,:,:) &
@@ -1397,167 +1575,6 @@ contains
 
     return
   end subroutine get_curvature_original
-
-  subroutine velocity_bc(vx, vy, vz)
-
-    use tpls_constants
-    use tpls_userchk
-    use tpls_mpi
-    use mpi
-
-    !----- Inputs/Outputs -----!
-
-    double precision, dimension(sx-1:ex+1, sy-1:ey+1, sz_uv:ez_uv), intent(inout) :: vx, vy
-    double precision, dimension(sx-1:ex+1, sy-1:ey+1, sz_w:ez_w), intent(inout) :: vz
-
-    !----- Miscellaneous -----!
-
-    integer :: i, j, k
-    double precision, dimension(0:maxn-2) :: u_inlet
-    double precision, dimension(0:maxn) :: phi_inlet
-
-    !----- Inflow boundary condition : u = u_inlet -----!
-    
-    call user_inflow(u_inlet,phi_inlet)
-    
-    if ( sx == 1 ) then
-       
-       do j = sy,ey
-          vx(0,j,:) = 2.0D+00*u_inlet(:) - vx(2,j,:)
-          vx(1,j,:) = u_inlet(:)
-       enddo
-       
-    end if
-    
-    !----- Outflow boundary condition : du/dx = 0 -----!
-    
-    if ( ex == ex_max ) then       
-       !vx(ex_max+1,:,:) = vx(ex_max,:,:)
-       vx(ex_max+1,:,:) = 2*vx(ex_max,:,:) - vx(ex_max-1, :, :)
-    end if
-    
-    !----- No-slip boundary conditions on the walls : u = 0 -----!
-
-    vx(:,:,sz_uv) = (1.0D+00/3.0D+00)*vx(:,:,sz_uv+1)
-    vx(:,:,ez_uv) = (1.0D+00/3.0D+00)*vx(:,:,ez_uv-1)
-
-        !----- Inflow boundary condition : v = 0 -----!
-    
-    if ( sx == 1 ) then
-       vy(0,:,:) = -vy(1,:,:)
-    end if
-    
-    !----- Outflow boundary condition : dv/dx = 0 -----!
-    
-    if ( ex == ex_max ) then
-       !vy(ex_max+1,:,:) = vy(ex_max,:,:)
-       vy(ex_max+1,:,:) = 2*vy(ex_max,:,:) - vy(ex_max-1, :, :)
-    end if
-    
-    !----- No-slip boundary condition on the walls : v = 0 -----!
-    
-    vy(:,:,sz_uv) = (1.0D+00/3.0D+00)*vy(:,:,sz_uv+1)
-    vy(:,:,ez_uv) = (1.0D+00/3.0D+00)*vy(:,:,ez_uv-1)
-    
-    !----- No-slip boundary condition on the walls : w = 0 -----!
-    
-    vz(:,:,0)      = 0.0D+00
-    vz(:,:,maxn-1) = 0.0D+00
-    
-    !----- Inflow boundary condition : w = 0 -----!
-    
-    if ( sx == 1 ) then
-       vz(0,:,:) = -vz(1,:,:)       
-    end if
-    
-    !----- Outflow boundary condition : dw/dx = 0 -----!
-    
-    if ( ex == ex_max ) then
-       !vz(ex_max+1,:,:) = vz(ex_max,:,:)
-       vz(ex_max+1,:,:) = 2*vz(ex_max,:,:) - vz(ex_max-1, :, :)
-    end if
-    
-    
-    call exchange2d(vx,stride_uv_xz,stride_uv_yz,neighbours,ex,ey,ez_uv,sx,sy,sz_uv,comm2d_quasiperiodic)
-    call exchange2d(vy,stride_uv_xz,stride_uv_yz,neighbours,ex,ey,ez_uv,sx,sy,sz_uv,comm2d_quasiperiodic)
-    call exchange2d(vz,stride_w_xz, stride_w_yz, neighbours,ex,ey, ez_w,sx,sy, sz_w,comm2d_quasiperiodic)
-    
-    return
-  end subroutine velocity_bc
-
-  subroutine pressure_correction(vx, vy, vz, p, phi)
-    
-    use tpls_constants
-    use tpls_levelset
-    use tpls_mpi
-    use tpls_userchk
-    use mpi
-    implicit none
-
-    !----- Inputs / Ouputs -----!
-
-    double precision, dimension(sx-1:ex+1,sy-1:ey+1,0:maxn-2), intent(inout) :: vx, vy
-    double precision, dimension(sx-1:ex+1,sy-1:ey+1,0:maxn-1), intent(inout) :: vz
-    
-    !----- Inputs -----!
-
-    double precision, dimension(sx-1:ex+1,sy-1:ey+1,0:maxn), intent(in)      :: phi
-    double precision, dimension(sx-1:ex+1,sy-1:ey+1,0:maxn), intent(in)      :: p
-
-    !----- Miscellaneous -----!
-    
-    integer :: i,j,k
-    integer :: sx_loc,ex_loc
-    double precision :: rho_ugrid,rho_vgrid,rho_wgrid
-    double precision, dimension(sx-1:ex+1,sy-1:ey+1,0:maxn) :: density
-   
-    if ( .not. density_matched) then
-
-       call get_density(density, phi)
-    
-       do k = 0,maxn-2
-          do j = sy,ey
-             do i = sx,ex
-                rho_ugrid = ( density(i+1,j+1,k+1) + density(i,j+1,k+1) ) / 2.0D+00
-                vx(i,j,k) = vx(i,j,k) - (dt/dx)*( 1.d0/rho_ugrid ) * ( p(i,j,k+1) - p(i-1,j,k+1) )
-             end do
-          end do
-       end do
-       
-       do k = 0,maxn-2
-          do j = sy,ey
-             do i = sx,ex
-                rho_vgrid = ( density(i,j+1,k+1) + density(i,j,k+1) ) / 2.d0
-                vy(i,j,k) = vy(i,j,k) - (dt/dy)*( 1.d0/rho_vgrid ) * ( p(i,j,k+1) - p(i,j-1,k+1) )             
-             end do
-          end do
-       end do
-       
-       do k = 0,maxn-1
-          do j = sy,ey
-             do i = sx,ex
-                rho_wgrid = ( density(i,j+1,k+1) + density(i,j+1,k) ) / 2.0D+00
-                vz(i,j,k) = vz(i,j,k) - (dt/dz)*( 1.d0/rho_wgrid ) * ( p(i,j,k+1) - p(i,j,k) )
-             end do
-          end do
-       end do
-
-    else
-
-       vx(sx:ex, sy:ey, 0:maxn-2) = vx(sx:ex, sy:ey, 0:maxn-2) &
-            - (dt/dx) * ( p(sx:ex, sy:ey, 1:maxn-1) - p(sx-1:ex-1, sy:ey, 1:maxn-1) )
-       vy(sx:ex, sy:ey, 0:maxn-2) = vy(sx:ex, sy:ey, 0:maxn-2) &
-            - (dt/dy) * ( p(sx:ex, sy:ey, 1:maxn-1) - p(sx:ex, sy-1:ey-1, 1:maxn-1) )
-       vz(sx:ex, sy:ey, 0:maxn-1) = vz(sx:ex, sy:ey, 0:maxn-1) &
-            - (dt/dz) * ( p(sx:ex, sy:ey, 1:maxn)   - p(sx:ex, sy:ey, 0:maxn-1) )
-       
-    endif
-       
-    call velocity_bc(vx, vy, vz)
-    
-    return
-  end subroutine pressure_correction
-
 
     
 end module tpls_fluid

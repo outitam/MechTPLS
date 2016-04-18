@@ -1449,28 +1449,22 @@ contains
        Call mpi_ssend(n_local_x,1,mpi_integer,master_id,stag,comm2d_quasiperiodic,ierr)
        Call mpi_ssend(n_local_y,1,  mpi_integer,master_id,etag,comm2d_quasiperiodic,ierr)
        
-       Call mpi_ssend(conv1_u(sx-1:ex+1,sy-1:ey+1,sz_uv:ez_uv), &
-            (n_local_x+2)*(n_local_y+2)*n_local_z_uv,mpi_double_precision,   &
+       Call mpi_ssend(conv1_u(sx-1:ex+1,sy-1:ey+1,sz_uv:ez_uv),(n_local_x+2)*(n_local_y+2)*n_local_z_uv,mpi_double_precision,   &
             master_id,0,comm2d_quasiperiodic,ierr)
 
-       Call mpi_ssend(conv1_v(sx-1:ex+1,sy-1:ey+1,sz_uv:ez_uv), &
-            (n_local_x+2)*(n_local_y+2)*n_local_z_uv,mpi_double_precision,   &
+       Call mpi_ssend(conv1_v(sx-1:ex+1,sy-1:ey+1,sz_uv:ez_uv),(n_local_x+2)*(n_local_y+2)*n_local_z_uv,mpi_double_precision,   &
             master_id,0,comm2d_quasiperiodic,ierr)
        
-       Call mpi_ssend(csf_u1(sx-1:ex+1,sy-1:ey+1,sz_uv:ez_uv), &
-            (n_local_x+2)*(n_local_y+2)*n_local_z_uv,mpi_double_precision,   &
+       Call mpi_ssend(csf_u1(sx-1:ex+1,sy-1:ey+1,sz_uv:ez_uv),(n_local_x+2)*(n_local_y+2)*n_local_z_uv,mpi_double_precision,   &
             master_id,0,comm2d_quasiperiodic,ierr)
 
-       Call mpi_ssend(csf_v1(sx-1:ex+1,sy-1:ey+1,sz_uv:ez_uv), &
-            (n_local_x+2)*(n_local_y+2)*n_local_z_uv,mpi_double_precision,   &
+       Call mpi_ssend(csf_v1(sx-1:ex+1,sy-1:ey+1,sz_uv:ez_uv),(n_local_x+2)*(n_local_y+2)*n_local_z_uv,mpi_double_precision,   &
             master_id,0,comm2d_quasiperiodic,ierr)
 
-       Call mpi_ssend(diffusion1_u(sx-1:ex+1,sy-1:ey+1,sz_uv:ez_uv), &
-            (n_local_x+2)*(n_local_y+2)*n_local_z_uv,mpi_double_precision,   &
+       Call mpi_ssend(diffusion1_u(sx-1:ex+1,sy-1:ey+1,sz_uv:ez_uv),(n_local_x+2)*(n_local_y+2)*n_local_z_uv,mpi_double_precision,   &
             master_id,0,comm2d_quasiperiodic,ierr)
 
-       Call mpi_ssend(diffusion1_v(sx-1:ex+1,sy-1:ey+1,sz_uv:ez_uv), &
-            (n_local_x+2)*(n_local_y+2)*n_local_z_uv,mpi_double_precision,   &
+       Call mpi_ssend(diffusion1_v(sx-1:ex+1,sy-1:ey+1,sz_uv:ez_uv),(n_local_x+2)*(n_local_y+2)*n_local_z_uv,mpi_double_precision,   &
             master_id,0,comm2d_quasiperiodic,ierr)
        
 
