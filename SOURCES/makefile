@@ -1,10 +1,12 @@
 TARGET	= ../TPLS
 
-F90	= ftn 
+F90	= mpif90 
 
 LDFLAGS = -O3 
 FFLAGS  = -O3
-LIBS    = 
+LIBS    = -llapack -lblas
+
+include $(PETSC_DIR)/lib/petsc/conf/variables
 
 SRC90	= tpls_constants.f90 \
 	  tpls_mpi.f90 \
@@ -12,9 +14,9 @@ SRC90	= tpls_constants.f90 \
 	  tpls_io.f90 \
 	  tpls_userchk.f90 \
 	  tpls_levelset.f90 \
+	  tpls_configuration.f90 \
 	  tpls_pressure_solver.f90 \
 	  tpls_selective_frequency.f90 \
-	  tpls_configuration.f90 \
 	  tpls_fluid.f90 \
 	  jacobi_iteration_allflux.f90 \
 	  tpls_helmholtz.f90 \

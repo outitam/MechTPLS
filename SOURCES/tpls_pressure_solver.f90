@@ -53,23 +53,28 @@ contains
     n = maxn
     t_temp = mpi_wtime()
 
+!!$    call conjugate_gradient(residual, x, -b, iterations, tolerance)
+!!$    call pressure_bc(x)
+
+    !----- SCHEDULED RELAXATION JACOBI METHOD -----!
+    
     if ( maxm == 2) then
        call norm(norme, b(sx:ex,1,1:n-1), size(b(sx:ex,1,1:n-1)))
     else
        call norm(norme, b(sx:ex,sy:ey,1:n-1), size(b(sx:ex,sy:ey,1:n-1)))
     endif
-   
+    
     !----- Begining of the Poisson solver -----!
-
+    
     residual = 1.0D+00
-
+    
     Outer_iteration : do it = 1, iterations, max_srj
        Inner_iteration : do sub_it = 1, max_srj
-
+          
           !----- Skip the big over-relaxation step as a starting point -----!
           !      Note: this trick tends to significantly decrease the cpu
           !            time required for convergence.
-
+          
           if ( (it == 1) .and. (sub_it==1) ) then
              weight = relax_srj(sub_it+1)
           else
@@ -78,7 +83,7 @@ contains
           
           call srj_iteration(residual, x, b, weight)
           residual = min(residual, residual/norme)
-
+          
           !----- Perform various checks -----!
           
           if ( residual.LT.tolerance ) EXIT Outer_iteration
@@ -92,7 +97,7 @@ contains
        write(*,*)'Iteration : ', istep, 'p---residual is ', residual, '(', it + sub_it, ')'
        write(*,*)
     end if
-
+    
     time_pressure = time_pressure + (mpi_wtime() - t_temp)
     
   end subroutine Poisson_solver
@@ -124,14 +129,14 @@ contains
     !----- Intermediate arrays -----!
 
     double precision, dimension(sx-1:ex+1,sy-1:ey+1,0:maxn) :: residual_array
-    integer :: n
+    integer :: n, i, j, k
 
     n = maxn
     
     residual = 0.0D+00
     residual_array = 0.0D+00
 
-    if ( maxm > 2 ) then
+    if ( maxm==2) then
        
        residual_array(sx:ex,sy:ey,1:n-1) = (1.0D+00/6.0D+00) * (        &
             pres(sx+1:ex+1,sy:ey,1:n-1) + pres(sx-1:ex-1,sy:ey,1:n-1) &
@@ -145,9 +150,9 @@ contains
        residual = residual * (6/dz**2)
        
     else if ( maxm == 2 ) then
-
+       
        residual_array(sx:ex,1,1:n-1) = .25 * (        &
-              pres(sx+1:ex+1,1,1:n-1) + pres(sx-1:ex-1,1,1:n-1) &
+            pres(sx+1:ex+1,1,1:n-1) + pres(sx-1:ex-1,1,1:n-1) &
             + pres(sx:ex,1,2:n)       + pres(sx:ex,1,0:n-2)     &
             - (dz**2.)*rhs(sx:ex,1,1:n-1)                           )
        
@@ -155,10 +160,12 @@ contains
        call norm(residual, residual_array(sx:ex,1,1:n-1), &
             size(residual_array(sx:ex,1,1:n-1)))
        residual = residual * (4/dz**2)
-       residual_array(sx:ex,2,1:n-1) = residual_array(sx:ex,1,1:n-1)
-
-    endif
+       do j = sy-1, ey+1
+          residual_array(sx:ex,j,1:n-1) = residual_array(sx:ex,1,1:n-1)
+       enddo
        
+    endif
+    
     pres = pres + relaxation*residual_array
     call pressure_bc(pres)
     
@@ -584,6 +591,140 @@ contains
     close(10)
     
   end subroutine SRJ_weights
+
+  subroutine laplace_operator(Lu, u)
+
+    use tpls_constants
+    use tpls_mpi
+    use mpi
+    implicit none
+
+    !----- Input -----!
+
+    double precision, dimension(sx-1:ex+1, sy-1:ey+1, 0:maxn), intent(in) :: u
+
+    !----- Output -----!
+
+    double precision, dimension(sx-1:ex+1, sy-1:ey+1, 0:maxn), intent(out) :: Lu
+
+    !----- Miscellaneous -----!
+
+    integer :: i, j, k, n
+    double precision, dimension(sx-1:ex+1, sy-1:ey+1, 0:maxn) :: work1, work2, work3
+
+    n = maxn-1
+    
+    work1 = 0
+    work2 = 0
+    work3 = 0
+    Lu = 0
+    
+    !----- d2u/dx2 -----!
+
+    work1(sx:ex, :, :) = u(sx+1:ex+1, :, :) - 2*u(sx:ex, :, :) + u(sx-1:ex-1, :, :)
+    work1 = work1/dx**2
+
+    !----- d2u/dy2 -----!
+
+    work2(:, sy:ey, :) = u(:, sy+1:ey-1, :) - 2*u(:, sy:ey, :) + u(:, sy-1:ey-1, :)
+    work2 = work2/dy**2
+
+    !----- d2u/dz2 -----!
+
+    work3(:, :, 1:n) = u(:, :, 2:n+1) - 2*u(:, :, 1:n) + u(:, :, 0:n-1)     
+    work3 = work3/dz**2
+
+    Lu = -(work1 + work2 + work3)
+    
+    return
+  end subroutine laplace_operator
+
+  subroutine conjugate_gradient(residual, u, b, maxiter, tol)
+
+    use tpls_constants
+    use tpls_maths
+    use tpls_mpi
+    use mpi
+    implicit none
+
+    !----- Input/Output -----!
+
+    double precision, dimension(sx-1:ex+1, sy-1:ey+1, 0:maxn), intent(inout) :: u
+    double precision, dimension(sx-1:ex+1, sy-1:ey+1, 0:maxn), intent(in)    :: b
+    double precision, intent(in) :: tol
+    integer, intent(in) :: maxiter
+    double precision, intent(out) :: residual
+
+    !----- Miscellaneous -----!
+
+    integer :: i, j, k, n, size_vec
+    double precision :: alpha, beta, dummy, normb, rTr, pTLp
+    double precision, dimension(sx-1:ex+1, sy-1:ey+1, 0:maxn) :: r, p, Lp, dummy_vec, r_old
+
+    n = maxn-1
+    residual = 1.
+    r = 0
+    r_old = 0
+    p = 0
+    size_vec = size(r(sx:ex, sy:ey, 1:n))
+    call norm(normb, b(sx:ex, sy:ey, 1:n), size_vec)
+    call laplace_operator(Lp, u)
+    r = b - Lp
+    p = r
+    
+    cg_loop : do k = 0, maxiter
+       if (residual .lt. tol) then
+          exit cg_loop
+       else
+          r_old = r
+          call pressure_bc(p) 
+          call laplace_operator(Lp, p)
+          
+          rTr = euclidean_scalar_product(r(sx:ex, sy:ey, 1:n), &
+               r(sx:ex, sy:ey, 1:n), &
+               size_vec )
+          pTLp = euclidean_scalar_product(p(sx:ex, sy:ey, 1:n), &
+               Lp(sx:ex, sy:ey, 1:n), &
+               size_vec )
+          
+          alpha = rTr/pTLp
+          
+          u = u + alpha*p
+          r = r - alpha*Lp
+          call exchange2d(r,stride_p_xz,stride_p_yz,neighbours, &
+               ex,ey,ez_p,sx,sy,sz_p,comm2d_quasiperiodic)
+ 
+          residual = euclidean_scalar_product(r(sx:ex, sy:ey, 1:n), &
+               r(sx:ex, sy:ey, 1:n), &
+               size_vec )
+          dummy = euclidean_scalar_product(r(sx:ex, sy:ey, 1:n), &
+               r_old(sx:ex, sy:ey, 1:n), &
+               size_vec )
+          beta = (residual-dummy)/rTr
+          
+          p = r + beta*p
+          
+          residual = sqrt(residual)/normb
+          
+       endif
+       
+    enddo cg_loop
+
+    if (residual .lt. tol) then
+       if ( my_id == master_id ) then
+          write(*,*)'Iteration : ', istep, 'p---residual is ', residual, '(', k, ')'
+          write(*,*)
+       endif
+    else
+       if ( my_id == master_id ) then
+          write(*,*)'Iteration : ', istep, 'p---residual is ', residual, '(', k, ')'
+          write(*,*) 'CG FAILED TO CONVERGE'
+       endif
+    endif
+    call pressure_bc(u)
+      
+    return
+  end subroutine conjugate_gradient
 
 
 end module tpls_pressure_solver

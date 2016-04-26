@@ -314,10 +314,170 @@ contains
 
 
 
-!-------------------------------------------------------------------------------------------------------------------------------
+  !-------------------------------------------------------------------------------------------------------------------------------
+
+  subroutine user_forcing(fx, fy, fz, vx, vy, vz)
+
+    use tpls_constants
+    use tpls_mpi
+    use mpi
+    implicit none
+
+    !----- Inputs -----!
+
+    double precision, dimension(sx-1:ex+1, sy-1:ey+1, sz_uv:ez_uv), intent(in) :: vx, vy
+    double precision, dimension(sx-1:ex+1, sy-1:ey+1, sz_w:ez_w)  , intent(in) :: vz
+
+    !----- Outputs -----!
+
+    double precision, dimension(sx-1:ex+1, sy-1:ey+1, sz_uv:ez_uv), intent(out) :: fx, fy
+    double precision, dimension(sx-1:ex+1, sy-1:ey+1, sz_w:ez_w)  , intent(out) :: fz
+
+    !----- Miscellaneous -----!
+
+    double precision :: amplitude, x, y, z
+    integer :: i, j, k
+
+    fx = 0.
+    fy = 0.
+    fz = 0.!-vz
+
+    !----- Calls for the laplacian of velocity -----!
+
+    !call velocity_laplacian( fx, fy, fz, vx, vy, vz)
+
+    !----- Amplitude of the forcing in the x-direction -----!
+
+    do i = sx, ex
+       x = (i-.5)*dx
+       amplitude = 1./(1.+exp(.5*(-x+.8*Lx)))
+       fx(i, :, :) = amplitude*fx(i, :, :)
+       fy(i, :, :) = amplitude*fy(i, :, :)
+       fz(i, :, :) = amplitude*fz(i, :, :)
+    enddo
+    
+    return
+  end subroutine user_forcing
 
 
+  subroutine velocity_laplacian(laplace_vx, laplace_vy, laplace_vz, vx, vy, vz)
 
+    use tpls_constants
+    use tpls_mpi
+    use mpi
+    implicit none
+    
+    !----- Inputs -----!
 
+    double precision, dimension(sx-1:ex+1, sy-1:ey+1, sz_uv:ez_uv), intent(in) :: vx, vy
+    double precision, dimension(sx-1:ex+1, sy-1:ey+1, sz_w:ez_w)  , intent(in) :: vz
+
+    !----- Outputs -----!
+
+    double precision, dimension(sx-1:ex+1, sy-1:ey+1, sz_uv:ez_uv), intent(out) :: laplace_vx, laplace_vy
+    double precision, dimension(sx-1:ex+1, sy-1:ey+1, sz_w:ez_w)  , intent(out) :: laplace_vz
+
+    !----- Miscellaneous -----!
+
+    integer :: i, j, k
+    double precision :: dudxp, dudxm, dudyp, dudym, dudzp, dudzm
+    double precision :: dvdxp, dvdxm, dvdyp, dvdym, dvdzp, dvdzm
+    double precision :: dwdxp, dwdxm, dwdyp, dwdym, dwdzp, dwdzm
+    double precision :: u_minusz, u_plusz
+    double precision :: v_minusz, v_plusz
+    double precision :: v_plusx, v_minusx
+    double precision :: w_plusx, w_minusx
+    
+    do k = 0,maxn-2
+       do j = sy,ey
+          do i = sx,ex
+
+             !----- Laplacian(vx) -----!
+             
+             if(k.eq.0)then
+                u_minusz = -vx(i,j,0)
+             else
+                u_minusz = vx(i,j,k-1)
+             end if
+             
+             if(k.eq.(maxn-2))then
+                u_plusz = -vx(i,j,maxn-2)
+             else
+                u_plusz = vx(i,j,k+1)
+             end if
+
+             !----- Compute gradients of u -----!
+
+             dudxp = ( vx(i+1,j,k) - vx(i,j,k) ) / dx
+             dudxm = ( vx(i,j,k) - vx(i-1,j,k) ) / dx
+
+             dudyp = ( vx(i,j+1,k) - vx(i,j,k) ) / dy
+             dudym = ( vx(i,j,k) - vx(i,j-1,k) ) / dy
+
+             dudzp = ( u_plusz - vx(i,j,k) ) / dz
+             dudzm = ( vx(i,j,k) - u_minusz ) /dz
+             
+             !----- Compute div( grad(u) ) -----!
+             
+             laplace_vx(i, j, k) = (dudxp-dudxm)/dx + (dudyp-dudym)/dy + (dudzp-dudzm)/dz
+
+             !----- Laplacian(vy) -----!
+
+             if(k.eq.0)then
+                v_minusz = -vy(i,j,0)
+             else
+                v_minusz = vy(i,j,k-1)
+             end if
+             
+             if(k.eq.(maxn-2))then
+                v_plusz = -vy(i,j,maxn-2)
+             else
+                v_plusz = vy(i,j,k+1)
+             end if
+
+             !----- Compute gradients of v -----!
+
+             dvdxp = ( vy(i+1,j,k) - vy(i,j,k) ) / dx
+             dvdxm = ( vy(i,j,k) - vy(i-1,j,k) ) / dx
+
+             dvdyp = ( vy(i,j+1,k) - vy(i,j,k) ) / dy
+             dvdym = ( vy(i,j,k) - vy(i,j-1,k) ) / dy
+
+             dvdzp = ( v_plusz - vy(i,j,k) ) / dz
+             dvdzm = ( vy(i,j,k) - v_minusz ) / dz
+             
+             !----- Compute div(grad(v)) -----!
+
+             laplace_vy(i, j, k) = (dvdxp-dvdxm)/dx + (dvdyp-dvdym)/dy + (dvdzp-dvdzm)/dz
+             
+          end do
+       end do
+    end do
+
+    do k=1,maxn-2
+       do j=sy,ey
+          do i=sx,ex
+             
+             !----- Compute gradients of w -----!
+
+             dwdxp = ( vz(i+1,j,k) - vz(i,j,k) ) / dx
+             dwdxm = ( vz(i,j,k) - vz(i-1,j,k) ) / dx
+
+             dwdyp = ( vz(i,j+1,k) - vz(i,j,k) ) / dy
+             dwdym = ( vz(i,j,k) - vz(i,j-1,k) ) / dy
+
+             dwdzp = ( vz(i,j,k+1) - vz(i,j,k) ) / dz
+             dwdzm = ( vz(i,j,k) - vz(i,j,k-1) ) / dz
+
+             !----- Compute div(grad(w)) -----!
+
+             laplace_vz(i, j, k) = (dwdxp-dwdxm)/dx + (dwdyp-dwdym)/dy + (dwdzp-dwdzm)/dz
+             
+          end do
+       end do
+    end do
+    
+    return
+  end subroutine velocity_laplacian
 
 end module tpls_userchk
