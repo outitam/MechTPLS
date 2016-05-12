@@ -514,7 +514,7 @@ contains
     !+++ Oulet: Neumann boundary condition +++!
     
     if ( ex == ex_max ) then
-       phi(ex_max+1,:,:) = 2.*phi(ex_max,:,:) - phi(ex_max-1,:,:)
+       phi(ex_max+1, :, :) = phi(ex_max, :, :)
     end if
     
     phi(:,:,0) = phi(:,:,1)

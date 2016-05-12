@@ -476,6 +476,23 @@ contains
     return
   end subroutine get_difference
 
+  double precision function euclidean_scalar_product(x, y, n)
+    use tpls_constants
+    use tpls_mpi
+    use mpi
+    implicit none
+
+    integer, intent(in) :: n
+    double precision, dimension(n), intent(in) :: x, y
+    double precision :: dummy
+
+    dummy = dot_product(x, y)
+    call mpi_allreduce(dummy, euclidean_scalar_product &
+         , 1, mpi_double_precision, mpi_sum, comm2d_quasiperiodic, ierr)
+    
+    return
+  end function euclidean_scalar_product
+
   subroutine norm(norme, x, n)
 
     use tpls_constants

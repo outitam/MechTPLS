@@ -172,7 +172,15 @@ contains
     pr_global  = 0.0D+00
     phi_global = 0.0D+00
 
-    call gather_tables_exact(u_global,v_global,w_global,pr_global,phi_global,vx,vy,vz,pr,phi)
+    if (num_procs==1) then
+       u_global = vx
+       v_global = vy
+       w_global = vz
+       pr_global = pr
+       phi_global = phi
+    else
+       call gather_tables_exact(u_global,v_global,w_global,pr_global,phi_global,vx,vy,vz,pr,phi)
+    endif
 
     !----- Outpost the resulting arrays -----!
     
@@ -436,7 +444,7 @@ contains
              do i = 1,nx
 
                 write(unit = ifich, iostat = iostatus) (vx(i,j,k) + vx(i+1,j,k))/2.0D+00
-
+                
              enddo
           enddo
        enddo
@@ -450,7 +458,7 @@ contains
              do i = 1,nx
 
                 write(unit = ifich, iostat = iostatus) (vz(i,j,k) + vz(i,j,k+1))/2.0D+00
-
+                
              enddo
           enddo
        enddo

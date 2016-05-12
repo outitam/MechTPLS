@@ -86,6 +86,7 @@ contains
     use tpls_mpi
     use tpls_levelset
     use tpls_configuration
+    use tpls_userchk
     use tpls_selective_frequency_damping, only : selective_frequency_damping
     use mpi
     use tpls_io
@@ -104,6 +105,9 @@ contains
     double precision, dimension(sx-1:ex+1,sy-1:ey+1,sz_w:ez_w), intent(out) :: RHS_w
 
     !----- Miscellaneous -----!
+
+    double precision, dimension(sx-1:ex+1,sy-1:ey+1,sz_uv:ez_uv) :: user_fx, user_fy
+    double precision, dimension(sx-1:ex+1,sy-1:ey+1,sz_w:ez_w)   :: user_fz
 
     double precision, dimension(sx-1:ex+1,sy-1:ey+1,sz_uv:ez_uv) :: csf_u2, csf_v2
     double precision, dimension(sx-1:ex+1,sy-1:ey+1,sz_w:ez_w)   :: csf_w2
@@ -235,6 +239,13 @@ contains
 
     if ( if_sfd ) call selective_frequency_damping(RHS_u,RHS_v,RHS_w &
          , vx, vy, vz)
+
+    !----- Compute the user-defined forcing -----!
+
+    call user_forcing(user_fx, user_fy, user_fz, vx, vy, vz)
+    rhs_u = rhs_u + dt*user_fx
+    rhs_v = rhs_v + dt*user_fy
+    rhs_w = rhs_w + dt*user_fz
     
     call exchange2d(RHS_u,stride_uv_xz,stride_uv_yz,neighbours,ex,ey,ez_uv,sx,sy,sz_uv,comm2d_quasiperiodic)
     call exchange2d(RHS_v,stride_uv_xz,stride_uv_yz,neighbours,ex,ey,ez_uv,sx,sy,sz_uv,comm2d_quasiperiodic)
@@ -351,17 +362,17 @@ contains
        
     endif
 
-    if ( sx == 1 ) then
-       csf_u(0,:,:) = 2.0D+00*csf_u(1,:,:) - csf_u(2,:,:)     
-       csf_v(0,:,:) = 2.0D+00*csf_v(1,:,:) - csf_v(2,:,:)
-       csf_w(0,:,:) = 2.0D+00*csf_w(1,:,:) - csf_w(2,:,:)
-    endif
-
-    if ( ex == ex_max ) then
-       csf_u(ex_max+1,:,:) = 2*csf_u(ex_max,:,:) - csf_u(ex_max-1,:,:)
-       csf_v(ex_max+1,:,:) = 2*csf_v(ex_max,:,:) - csf_v(ex_max-1,:,:)
-       csf_w(ex_max+1,:,:) = 2*csf_w(ex_max,:,:) - csf_w(ex_max-1,:,:)
-    endif
+!!$    if ( sx == 1 ) then
+!!$       csf_u(0,:,:) = 2.0D+00*csf_u(1,:,:) - csf_u(2,:,:)     
+!!$       csf_v(0,:,:) = 2.0D+00*csf_v(1,:,:) - csf_v(2,:,:)
+!!$       csf_w(0,:,:) = 2.0D+00*csf_w(1,:,:) - csf_w(2,:,:)
+!!$    endif
+!!$
+!!$    if ( ex == ex_max ) then
+!!$       csf_u(ex_max+1,:,:) = 2*csf_u(ex_max,:,:) - csf_u(ex_max-1,:,:)
+!!$       csf_v(ex_max+1,:,:) = 2*csf_v(ex_max,:,:) - csf_v(ex_max-1,:,:)
+!!$       csf_w(ex_max+1,:,:) = 2*csf_w(ex_max,:,:) - csf_w(ex_max-1,:,:)
+!!$    endif
     
     return
   end subroutine compute_csf
@@ -536,6 +547,9 @@ contains
     end if
     
     if ( ex == ex_max ) then
+!!$       fx_csf(ex_max+1,:,:) = fx_csf(ex_max,:,:)
+!!$       fy_csf(ex_max+1,:,:) = fy_csf(ex_max,:,:)
+!!$       fz_csf(ex_max+1,:,:) = fz_csf(ex_max,:,:)
        fx_csf(ex_max+1,:,:) = 2.0D+00*fx_csf(ex_max,:,:) - fx_csf(ex_max-1,:,:)
        fy_csf(ex_max+1,:,:) = 2.0D+00*fy_csf(ex_max,:,:) - fy_csf(ex_max-1,:,:)
        fz_csf(ex_max+1,:,:) = 2.0D+00*fz_csf(ex_max,:,:) - fz_csf(ex_max-1,:,:)
@@ -1431,9 +1445,8 @@ contains
     
     !----- Outflow boundary condition : du/dx = 0 -----!
     
-    if ( ex == ex_max ) then       
-       !vx(ex_max+1,:,:) = vx(ex_max,:,:)
-       vx(ex_max+1,:,:) = 2*vx(ex_max,:,:) - vx(ex_max-1, :, :)
+    if ( ex == ex_max ) then
+       vx(ex_max+1, :, :) = 4./3.*vx(ex_max, :, :) - 1./3.*vx(ex_max-1, :, :)
     end if
     
     !----- No-slip boundary conditions on the walls : u = 0 -----!
@@ -1450,8 +1463,7 @@ contains
     !----- Outflow boundary condition : dv/dx = 0 -----!
     
     if ( ex == ex_max ) then
-       !vy(ex_max+1,:,:) = vy(ex_max,:,:)
-       vy(ex_max+1,:,:) = 2*vy(ex_max,:,:) - vy(ex_max-1, :, :)
+       vy(ex_max+1,:,:) = vy(ex_max,:,:)
     end if
     
     !----- No-slip boundary condition on the walls : v = 0 -----!
@@ -1473,8 +1485,7 @@ contains
     !----- Outflow boundary condition : dw/dx = 0 -----!
     
     if ( ex == ex_max ) then
-       !vz(ex_max+1,:,:) = vz(ex_max,:,:)
-       vz(ex_max+1,:,:) = 2*vz(ex_max,:,:) - vz(ex_max-1, :, :)
+       vz(ex_max+1,:,:) = vz(ex_max,:,:)
     end if
     
     
@@ -1511,7 +1522,7 @@ contains
     double precision :: rho_ugrid,rho_vgrid,rho_wgrid
     double precision, dimension(sx-1:ex+1,sy-1:ey+1,0:maxn) :: density
    
-    if ( .not. density_matched) then
+    if ( .not. density_matched ) then
 
        call get_density(density, phi)
     
